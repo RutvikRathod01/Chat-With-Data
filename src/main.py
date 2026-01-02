@@ -64,13 +64,14 @@ def gradio_app():
                 history.append({"role": "user", "content": message})
             return history, gr.Textbox(value="", interactive=False)
 
-        def process_input_gradio(text, files):
+        def process_input_gradio(text, files, current_session):
             """Process uploaded documents and text."""
             if not files and not text.strip():
                 return "⚠️ Please upload files or enter text before processing.", None, []
             
             try:
-                rag_chain = proceed_input(text, files)
+                # Pass existing session to properly close it before creating new one
+                rag_chain = proceed_input(text, files, existing_session=current_session)
                 return "✅ Documents processed successfully! You can now ask questions.", rag_chain, []
             except Exception as e:
                 return f"❌ Error: {str(e)}", None, []
@@ -115,7 +116,7 @@ def gradio_app():
         # Event handlers
         process_btn.click(
             fn=process_input_gradio, 
-            inputs=[text_input, file_upload], 
+            inputs=[text_input, file_upload, rag_chain_state], 
             outputs=[output_message, rag_chain_state, chatbot]
         )
 
