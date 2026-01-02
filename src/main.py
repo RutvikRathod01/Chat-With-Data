@@ -101,8 +101,8 @@ def gradio_app():
                 user_message = str(user_message)
             
             try:
-                # Get answer from RAG chain
-                answer = process_user_question(user_message, rag_chain_state)
+                # Include recent chat history to improve contextual answers
+                answer = process_user_question(user_message, rag_chain_state, history)
                 history.append({"role": "assistant", "content": answer})
             except Exception as e:
                 history.append({

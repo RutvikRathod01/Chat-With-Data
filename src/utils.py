@@ -6,6 +6,7 @@ import uuid
 import pytz
 import logging
 from pathlib import Path
+from operator import itemgetter
 import gradio as gr
 
 
@@ -148,6 +149,26 @@ def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
 
+def format_chat_history(chat_history, limit=6):
+    """Serialize the most recent chat turns (chronological) for grounding the LLM."""
+    if not chat_history:
+        return "None"
+
+    filtered = [m for m in chat_history if isinstance(m, dict) and m.get("role") in {"user", "assistant"}]
+    recent = filtered[-limit:]
+
+    lines = []
+    turn = 1
+    for msg in recent:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        prefix = "User" if role == "user" else "Assistant" if role == "assistant" else role
+        lines.append(f"Turn {turn} - {prefix}: {content}")
+        turn += 1
+
+    return "\n".join(lines) if lines else "None"
+
+
 def build_rag_chain(system_prompt, retriever):
     """Build RAG chain with retriever and LLM."""
     logging.info("Building modern RAG pipeline")
@@ -157,14 +178,18 @@ def build_rag_chain(system_prompt, retriever):
     template = ChatPromptTemplate.from_messages(
         [
             ("system", system_prompt),
-            ("human", "Context:\n{context}\n\nQuestion: {question}"),
+            (
+                "human",
+                "Question: {question}",
+            ),
         ]
     )
 
     rag_chain = (
         {
-            "context": retriever | format_docs,
-            "question": RunnablePassthrough(),
+            "context": itemgetter("question") | retriever | format_docs,
+            "question": itemgetter("question"),
+            "history": itemgetter("history"),
         }
         | template
         | llm
@@ -252,7 +277,7 @@ def proceed_input(text, uploaded_files):
 # ---------------------------------------
 # ANSWER PROCESSING
 # ---------------------------------------
-def process_user_question(user_input, rag_chain):
+def process_user_question(user_input, rag_chain, chat_history=None):
     """Process user question and get answer from RAG chain."""
     try:
         # Ensure user_input is a string
@@ -266,7 +291,9 @@ def process_user_question(user_input, rag_chain):
             return "Please enter a valid question."
         
         logging.info(f"User Q: {user_input}")
-        answer = rag_chain.invoke(user_input)
+        history_text = format_chat_history(chat_history)
+        payload = {"question": user_input, "history": history_text}
+        answer = rag_chain.invoke(payload)
         logging.info(f"Answer generated successfully: {len(answer)} chars")
         return answer
     except Exception as e:
