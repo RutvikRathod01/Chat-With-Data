@@ -1,7 +1,6 @@
 import logging
 
 import gradio as gr
-from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
@@ -88,19 +87,15 @@ def retrieve_relevant_chunks(question: str, session: RagSession, chat_history=No
     return context_entries
 
 
-def proceed_input(text, uploaded_files):
-    """Main function to process text and uploaded files into a RAG chain."""
+def proceed_input(uploaded_files):
+    """Main function to process uploaded files into a RAG chain."""
     try:
         saved_files, file_group_name = validate_and_save_files(uploaded_files)
         docs = load_docs(saved_files)
         logging.info("Loaded %s documents from files", len(docs))
 
-        if text and text.strip():
-            docs.append(Document(page_content=text))
-            logging.info("Added user text to documents")
-
         if not docs:
-            raise gr.Error("❌ No content to process. Please upload files or enter text.")
+            raise gr.Error("❌ No content to process. Please upload files.")
 
         splits = get_document_chunks(docs)
         reset_embedding_store()

@@ -22,7 +22,7 @@ def gradio_app():
         
         # Header
         gr.Markdown("# 📚 Chat with Your Documents")
-        gr.Markdown("Upload documents (PDF, DOCX, XLSX) or enter text, then ask questions!")
+        gr.Markdown("Upload documents (PDF, DOCX, XLSX), then ask questions!")
         
         # State to persist RAG chain across interactions
         rag_chain_state = gr.State(None)
@@ -30,11 +30,6 @@ def gradio_app():
         # Input Section
         with gr.Row():
             with gr.Column(scale=1):
-                text_input = gr.Textbox(
-                    label="📝 Enter Text (Optional)", 
-                    lines=8,
-                    placeholder="Paste any text you want to include in the knowledge base..."
-                )
                 file_upload = gr.File(
                     label="📁 Upload Documents", 
                     file_types=[".xlsx", ".pdf", ".docx"], 
@@ -65,13 +60,13 @@ def gradio_app():
                 history.append({"role": "user", "content": message})
             return history, gr.Textbox(value="", interactive=False)
 
-        def process_input_gradio(text, files):
-            """Process uploaded documents and text."""
-            if not files and not text.strip():
-                return "⚠️ Please upload files or enter text before processing.", None, []
+        def process_input_gradio(files):
+            """Process uploaded documents."""
+            if not files:
+                return "⚠️ Please upload files before processing.", None, []
             
             try:
-                rag_chain = proceed_input(text, files)
+                rag_chain = proceed_input(files)
                 return "✅ Documents processed successfully! You can now ask questions.", rag_chain, []
             except Exception as e:
                 return f"❌ Error: {str(e)}", None, []
@@ -116,7 +111,7 @@ def gradio_app():
         # Event handlers
         process_btn.click(
             fn=process_input_gradio, 
-            inputs=[text_input, file_upload], 
+            inputs=[file_upload], 
             outputs=[output_message, rag_chain_state, chatbot]
         )
 
