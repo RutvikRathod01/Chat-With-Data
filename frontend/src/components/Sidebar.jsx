@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { FaPlus, FaTimes, FaTrash, FaFile, FaComments, FaEllipsisV, FaPencilAlt, FaBroom } from 'react-icons/fa'
+import { FaPlus, FaTimes, FaTrash, FaFile, FaComments, FaEllipsisV, FaPencilAlt, FaBroom, FaBars } from 'react-icons/fa'
 import { useChat } from '../context/ChatContext'
 import FileUpload from './FileUpload'
 import { formatDistanceToNow } from 'date-fns'
@@ -73,103 +73,139 @@ const Sidebar = ({ isOpen, onClose }) => {
       <aside
         className={`
           fixed lg:relative inset-y-0 left-0 z-50
-          w-80 bg-gray-900 text-white
-          transform transition-transform duration-300 ease-in-out
-          ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
-          flex flex-col
+          bg-gray-900 text-white
+          transition-all duration-300 ease-in-out
+          ${isOpen ? 'w-80' : 'w-0 lg:w-16'}
+          flex flex-col overflow-hidden
         `}
       >
-        {/* Header */}
-        <div className="p-4 border-b border-gray-700">
+        {/* Collapsed view - Icon only (Desktop) */}
+        <div className={`${isOpen ? 'hidden' : 'hidden lg:flex'} flex-col items-center py-4 space-y-4 w-16`}>
+          {/* Toggle button */}
           <button
-            onClick={handleNewChat}
-            className="w-full flex items-center space-x-3 text-gray-300 hover:bg-gray-800 px-3 py-2.5 rounded-lg font-normal transition-colors mb-4"
+            onClick={onClose}
+            className="p-3 hover:bg-gray-800 rounded-lg transition-colors"
+            title="Open sidebar"
           >
-            <FaPencilAlt className="w-4 h-4" />
-            <span className="text-sm">New chat</span>
+            <FaBars className="w-5 h-5 text-gray-400" />
           </button>
 
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold">Your chats</h2>
-            <button
-              onClick={onClose}
-              className="lg:hidden p-2 hover:bg-gray-800 rounded-lg transition-colors"
-            >
-              <FaTimes />
-            </button>
+          {/* New chat icon */}
+          <button
+            onClick={handleNewChat}
+            className="p-3 hover:bg-gray-800 rounded-lg transition-colors"
+            title="New chat"
+          >
+            <FaPencilAlt className="w-5 h-5 text-gray-400" />
+          </button>
+
+          {/* Chats icon */}
+          <div className="p-3">
+            <FaComments className="w-5 h-5 text-gray-400" />
           </div>
         </div>
 
-        {/* Sessions List */}
-        <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-2">
-          {sessions.length === 0 ? (
-            <div className="text-center py-12 px-4">
-              <FaComments className="w-12 h-12 text-gray-600 mx-auto mb-3" />
-              <p className="text-gray-400 text-sm">No sessions yet</p>
-              <p className="text-gray-500 text-xs mt-1">
-                Upload documents to start chatting
-              </p>
-            </div>
-          ) : (
-            sessions.map((session) => (
-              <div
-                key={session.session_id}
-                onClick={() => handleSessionClick(session)}
-                className={`
-                  group relative p-3 rounded-lg cursor-pointer transition-all
-                  ${currentSession?.session_id === session.session_id
-                    ? 'bg-gray-800'
-                    : 'hover:bg-gray-800'
-                  }
-                `}
+        {/* Expanded view - Full sidebar */}
+        <div className={`${isOpen ? 'flex' : 'hidden'} flex-col flex-1 overflow-hidden`}>
+          {/* Header */}
+          <div className="p-4 border-b border-gray-700">
+            {/* New chat button and toggle button row */}
+            <div className="flex items-center justify-between mb-4">
+              <button
+                onClick={handleNewChat}
+                className="flex items-center space-x-3 text-gray-300 hover:bg-gray-800 px-3 py-2.5 rounded-lg font-normal transition-colors"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 min-w-0 pr-2">
-                    <h3 className="text-sm font-normal truncate text-gray-200">
-                      {session.document_name}
-                    </h3>
-                  </div>
+                <FaPencilAlt className="w-4 h-4" />
+                <span className="text-sm">New chat</span>
+              </button>
 
-                  <div className="relative flex-shrink-0" ref={openMenuId === session.session_id ? menuRef : null}>
-                    <button
-                      onClick={(e) => toggleMenu(e, session.session_id)}
-                      className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-gray-700 rounded transition-all"
-                      title="Options"
-                    >
-                      <FaEllipsisV className="w-3 h-3 text-gray-400" />
-                    </button>
+              {/* Toggle button */}
+              <button
+                onClick={onClose}
+                className="p-2 hover:bg-gray-800 rounded-lg transition-colors"
+                title="Close sidebar"
+              >
+                <FaBars className="w-4 h-4 text-gray-400" />
+              </button>
+            </div>
 
-                    {/* Dropdown Menu */}
-                    {openMenuId === session.session_id && (
-                      <div className="absolute right-0 mt-1 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-20 py-1">
-                        <button
-                          onClick={(e) => handleClearChat(e, session.session_id)}
-                          className="w-full flex items-center space-x-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
-                        >
-                          <FaBroom className="w-3 h-3" />
-                          <span>Clear Chat</span>
-                        </button>
-                        <button
-                          onClick={(e) => handleDelete(e, session.session_id)}
-                          className="w-full flex items-center space-x-2 px-4 py-2 text-sm text-red-400 hover:bg-gray-700 transition-colors"
-                        >
-                          <FaTrash className="w-3 h-3" />
-                          <span>Delete</span>
-                        </button>
-                      </div>
-                    )}
+            {/* Your chats title */}
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-bold">Your chats</h2>
+            </div>
+          </div>
+
+          {/* Sessions List */}
+          <div className="flex-1 overflow-y-auto scrollbar-thin p-3 space-y-2">
+            {sessions.length === 0 ? (
+              <div className="text-center py-12 px-4">
+                <FaComments className="w-12 h-12 text-gray-600 mx-auto mb-3" />
+                <p className="text-gray-400 text-sm">No sessions yet</p>
+                <p className="text-gray-500 text-xs mt-1">
+                  Upload documents to start chatting
+                </p>
+              </div>
+            ) : (
+              sessions.map((session) => (
+                <div
+                  key={session.session_id}
+                  onClick={() => handleSessionClick(session)}
+                  className={`
+                    group relative p-3 rounded-lg cursor-pointer transition-all
+                    ${currentSession?.session_id === session.session_id
+                      ? 'bg-gray-800'
+                      : 'hover:bg-gray-800'
+                    }
+                  `}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex-1 min-w-0 pr-2">
+                      <h3 className="text-sm font-normal truncate text-gray-200">
+                        {session.document_name}
+                      </h3>
+                    </div>
+
+                    <div className="relative flex-shrink-0" ref={openMenuId === session.session_id ? menuRef : null}>
+                      <button
+                        onClick={(e) => toggleMenu(e, session.session_id)}
+                        className="opacity-0 group-hover:opacity-100 p-1.5 hover:bg-gray-700 rounded transition-all"
+                        title="Options"
+                      >
+                        <FaEllipsisV className="w-3 h-3 text-gray-400" />
+                      </button>
+
+                      {/* Dropdown Menu */}
+                      {openMenuId === session.session_id && (
+                        <div className="absolute right-0 mt-1 w-48 bg-gray-800 border border-gray-700 rounded-lg shadow-lg z-20 py-1">
+                          <button
+                            onClick={(e) => handleClearChat(e, session.session_id)}
+                            className="w-full flex items-center space-x-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+                          >
+                            <FaBroom className="w-3 h-3" />
+                            <span>Clear Chat</span>
+                          </button>
+                          <button
+                            onClick={(e) => handleDelete(e, session.session_id)}
+                            className="w-full flex items-center space-x-2 px-4 py-2 text-sm text-red-400 hover:bg-gray-700 transition-colors"
+                          >
+                            <FaTrash className="w-3 h-3" />
+                            <span>Delete</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))
-          )}
-        </div>
+              ))
+            )}
+          </div>
 
-        {/* Footer */}
-        <div className="p-4 border-t border-gray-700">
-          <div className="text-xs text-gray-400 text-center">
-            <p>RAG-powered Document Chat</p>
-            <p className="mt-1">Built with React & FastAPI</p>
+          {/* Footer */}
+          <div className="p-4 border-t border-gray-700">
+            <div className="text-xs text-gray-400 text-center">
+              <p>RAG-powered Document Chat</p>
+              <p className="mt-1">Built with React & FastAPI</p>
+            </div>
           </div>
         </div>
       </aside>

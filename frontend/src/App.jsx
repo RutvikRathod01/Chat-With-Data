@@ -11,8 +11,8 @@ function App() {
     <ChatProvider>
       <div className="flex h-screen overflow-hidden bg-gray-50">
         {/* Sidebar */}
-        <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-        
+        <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(!sidebarOpen)} />
+
         {/* Main Content */}
         <div className="flex flex-col flex-1 overflow-hidden">
           <Header onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
