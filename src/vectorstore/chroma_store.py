@@ -30,52 +30,34 @@ def get_session_store_dir(file_group_name):
     """Get a unique directory for this session to avoid database conflicts."""
     global _CURRENT_STORE_DIR
 
-    if _CURRENT_STORE_DIR is not None and _CURRENT_STORE_DIR.exists():
-        try:
-            import gc
-            import stat
-
-            gc.collect()
-            time.sleep(0.3)
-            for root, dirs, files in os.walk(_CURRENT_STORE_DIR):
-                for dname in dirs:
-                    os.chmod(os.path.join(root, dname), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-                for fname in files:
-                    os.chmod(os.path.join(root, fname), stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-            shutil.rmtree(_CURRENT_STORE_DIR)
-            logging.info("Cleaned up previous session directory: %s", _CURRENT_STORE_DIR)
-        except Exception as exc:  # pylint: disable=broad-except
-            logging.warning("Could not clean up previous session directory: %s", str(exc))
-
+    # Just set the session directory without deleting previous ones
     session_dir = EMBEDDING_STORE_DIR / file_group_name
-    if session_dir.exists():
+    
+    # Only create if it doesn't exist (reuse existing for same collection)
+    if not session_dir.exists():
+        session_dir.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.rmtree(session_dir)
-            time.sleep(0.1)
-        except Exception as exc:  # pylint: disable=broad-except
-            logging.warning("Could not remove existing session directory: %s", str(exc))
-
-    session_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        import stat
-
-        os.chmod(session_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
-    except Exception:
-        pass
+            import stat
+            os.chmod(session_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+        except Exception:
+            pass
+        logging.info("Created session store directory: %s", session_dir)
+    else:
+        logging.info("Reusing existing session store directory: %s", session_dir)
 
     _CURRENT_STORE_DIR = session_dir
-    logging.info("Created session store directory: %s", session_dir)
     return session_dir
 
 
-def reset_embedding_store():
-    """Clean up old session directories (keeping only the most recent)."""
+def reset_embedding_store(max_age_hours=168):  # 7 days default
+    """Clean up very old session directories (optional cleanup)."""
     if EMBEDDING_STORE_DIR.exists():
         try:
             import gc
 
             current_time = time.time()
-            max_age = 3600
+            max_age = max_age_hours * 3600  # Convert hours to seconds
+            cleaned_count = 0
             for item in EMBEDDING_STORE_DIR.iterdir():
                 if item.is_dir():
                     try:
@@ -84,9 +66,12 @@ def reset_embedding_store():
                             gc.collect()
                             time.sleep(0.1)
                             shutil.rmtree(item, ignore_errors=True)
-                            logging.info("Cleaned up old session directory: %s", item)
+                            cleaned_count += 1
+                            logging.info("Cleaned up old session directory (%.1f days old): %s", age/86400, item)
                     except Exception as exc:  # pylint: disable=broad-except
                         logging.warning("Error cleaning up directory %s: %s", item, str(exc))
+            if cleaned_count > 0:
+                logging.info("Cleaned up %d old session directories", cleaned_count)
         except Exception as exc:  # pylint: disable=broad-except
             logging.warning("Error in reset_embedding_store: %s", str(exc))
 

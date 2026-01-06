@@ -4,6 +4,7 @@ from pathlib import Path
 import gradio as gr
 from dotenv import load_dotenv
 
+from models.session_manager import get_session_manager
 from rag.pipeline import process_user_question, proceed_input
 
 # Load environment variables
@@ -14,24 +15,41 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+# Initialize session manager
+session_manager = get_session_manager()
+
 
 def gradio_app():
-    """Enhanced Gradio app to chat with documents using RAG."""
+    """Enhanced Gradio app to chat with documents using RAG with persistent sessions."""
     
     with gr.Blocks(title="Chat with Documents") as interface:
         
         # Header
         gr.Markdown("# 📚 Chat with Your Documents")
-        gr.Markdown("Upload documents (PDF, DOCX, XLSX), then ask questions!")
+        gr.Markdown("Upload documents (PDF, DOCX, XLSX), then ask questions! Your conversations are saved automatically.")
         
-        # State to persist RAG chain across interactions
-        rag_chain_state = gr.State(None)
+        # State variables
+        current_session_id = gr.State(None)
+        
+        # Session Management Section
+        with gr.Row():
+            with gr.Column(scale=2):
+                session_dropdown = gr.Dropdown(
+                    label="📋 Document Sessions",
+                    choices=[],
+                    value=None,
+                    interactive=True,
+                    info="Select a previous document session to continue chatting"
+                )
+            with gr.Column(scale=1):
+                refresh_sessions_btn = gr.Button("🔄 Refresh", size="sm")
+                delete_session_btn = gr.Button("🗑️ Delete Session", size="sm", variant="stop")
         
         # Input Section
         with gr.Row():
             with gr.Column(scale=1):
                 file_upload = gr.File(
-                    label="📁 Upload Documents", 
+                    label="📁 Upload New Documents", 
                     file_types=[".xlsx", ".pdf", ".docx"], 
                     file_count="multiple"
                 )
@@ -52,38 +70,128 @@ def gradio_app():
                 show_label=False,
                 scale=4
             )
-            clear_btn = gr.Button("🗑️ Clear", scale=1)
+            clear_chat_btn = gr.Button("🗑️ Clear Chat", scale=1)
 
-        def add_message(history, message):
-            """Add user message to chat history."""
-            if message and message.strip():
-                history.append({"role": "user", "content": message})
-            return history, gr.Textbox(value="", interactive=False)
+        def refresh_session_list():
+            """Refresh the list of available sessions."""
+            sessions = session_manager.get_all_sessions()
+            choices = [doc_name for session_id, doc_name, _ in sessions]
+            session_map = {
+                doc_name: session_id
+                for session_id, doc_name, _ in sessions
+            }
+            return gr.Dropdown(choices=choices), session_map
+
+        def get_session_id_from_display(display_value, session_map):
+            """Extract session_id from display value."""
+            return session_map.get(display_value)
+
+        def load_session_chat(display_value, session_map):
+            """Load chat history when a session is selected."""
+            if not display_value:
+                return [], None, "Select a session to continue chatting"
+            
+            session_id = session_map.get(display_value)
+            if not session_id:
+                return [], None, "⚠️ Session not found in map. Try refreshing."
+            
+            # Check if RAG session exists in memory
+            rag_session = session_manager.get_session(session_id)
+            if not rag_session:
+                return [], None, f"⚠️ Session expired. Please reprocess the documents to restore this session."
+            
+            # Load chat history from storage
+            messages = session_manager.load_chat_history(session_id)
+            chat_history = [
+                {"role": msg["role"], "content": msg["content"]}
+                for msg in messages
+            ]
+            
+            # Get session info
+            session_info = session_manager.get_session_info(session_id)
+            if session_info:
+                status = f"✅ Loaded session: {session_info['document_name']} ({len(chat_history)} messages)"
+            else:
+                status = "✅ Session loaded"
+            
+            return chat_history, session_id, status
 
         def process_input_gradio(files):
-            """Process uploaded documents."""
+            """Process uploaded documents and create a new session."""
             if not files:
-                return "⚠️ Please upload files before processing.", None, []
+                return "⚠️ Please upload files before processing.", None, [], None, gr.Dropdown()
             
             try:
-                rag_chain = proceed_input(files)
-                return "✅ Documents processed successfully! You can now ask questions.", rag_chain, []
+                # Process documents (document name is auto-generated)
+                rag_session, collection_name, doc_name = proceed_input(files)
+                
+                # Create new session
+                session_id = session_manager.create_session(
+                    rag_session, 
+                    doc_name,
+                    collection_name
+                )
+                
+                # Refresh session list
+                sessions = session_manager.get_all_sessions()
+                choices = [doc_name for sid, doc_name, _ in sessions]
+                
+                display_value = doc_name
+                
+                return (
+                    f"✅ Documents processed successfully! Session: {doc_name}",
+                    session_id,
+                    [],
+                    display_value,
+                    gr.Dropdown(choices=choices, value=display_value)
+                )
             except Exception as e:
-                return f"❌ Error: {str(e)}", None, []
+                return f"❌ Error: {str(e)}", None, [], None, gr.Dropdown()
 
-        def bot_response(history, rag_chain_state):
+        def add_message(history, message, session_id):
+            """Add user message to chat history."""
+            if not message or not message.strip():
+                return history, gr.Textbox(value="", interactive=True)
+            
+            if not session_id:
+                # Don't add duplicate warnings
+                if not history or history[-1].get("content") != "⚠️ Please select or create a document session first.":
+                    history.append({
+                        "role": "assistant",
+                        "content": "⚠️ Please select or create a document session first."
+                    })
+                return history, gr.Textbox(value="", interactive=True)
+            
+            # Add to display history
+            history.append({"role": "user", "content": message})
+            
+            # Save to database
+            session_manager.save_message(session_id, "user", message)
+            
+            return history, gr.Textbox(value="", interactive=False)
+
+        def bot_response(history, session_id):
             """Generate bot response."""
             if not history:
                 return history
-                
-            if rag_chain_state is None:
+            
+            if not session_id:
                 history.append({
                     "role": "assistant", 
-                    "content": "⚠️ Please upload and process documents first."
+                    "content": "⚠️ Please select or create a document session first."
                 })
                 return history
             
-            # Get the last user message - handle both dict and list formats
+            # Get RAG session
+            rag_session = session_manager.get_session(session_id)
+            if not rag_session:
+                history.append({
+                    "role": "assistant", 
+                    "content": "⚠️ Session expired. Please process documents again."
+                })
+                return history
+            
+            # Get the last user message
             last_message = history[-1]
             if isinstance(last_message, dict):
                 user_message = last_message.get("content", "")
@@ -97,39 +205,101 @@ def gradio_app():
                 user_message = str(user_message)
             
             try:
-                # Include recent chat history to improve contextual answers
-                answer = process_user_question(user_message, rag_chain_state, history)
+                # Get answer from RAG
+                answer = process_user_question(user_message, rag_session, history)
                 history.append({"role": "assistant", "content": answer})
+                
+                # Save to database
+                session_manager.save_message(session_id, "assistant", answer)
             except Exception as e:
-                history.append({
-                    "role": "assistant", 
-                    "content": f"❌ Error processing question: {str(e)}"
-                })
+                error_msg = f"❌ Error processing question: {str(e)}"
+                history.append({"role": "assistant", "content": error_msg})
+                session_manager.save_message(session_id, "assistant", error_msg)
             
             return history
 
+        def clear_current_chat(session_id):
+            """Clear chat for current session."""
+            if session_id:
+                session_manager.clear_session_chat(session_id)
+                return [], "✅ Chat cleared"
+            return [], "⚠️ No active session"
+
+        def delete_current_session(display_value, session_map):
+            """Delete the currently selected session."""
+            if not display_value:
+                return [], None, "⚠️ No session selected", gr.Dropdown()
+            
+            session_id = session_map.get(display_value)
+            if session_id:
+                session_manager.delete_session(session_id)
+                
+                # Refresh session list
+                sessions = session_manager.get_all_sessions()
+                choices = [doc_name for sid, doc_name, _ in sessions]
+                
+                return [], None, f"✅ Session deleted", gr.Dropdown(choices=choices, value=None)
+            
+            return [], None, "⚠️ Session not found", gr.Dropdown()
+
+        # Store session map in state
+        session_map_state = gr.State({})
+
         # Event handlers
+        interface.load(
+            fn=refresh_session_list,
+            outputs=[session_dropdown, session_map_state]
+        )
+
+        refresh_sessions_btn.click(
+            fn=refresh_session_list,
+            outputs=[session_dropdown, session_map_state]
+        )
+
+        session_dropdown.select(
+            fn=load_session_chat,
+            inputs=[session_dropdown, session_map_state],
+            outputs=[chatbot, current_session_id, output_message]
+        )
+
         process_btn.click(
             fn=process_input_gradio, 
             inputs=[file_upload], 
-            outputs=[output_message, rag_chain_state, chatbot]
+            outputs=[output_message, current_session_id, chatbot, session_dropdown, session_dropdown]
+        ).then(
+            fn=refresh_session_list,
+            outputs=[session_dropdown, session_map_state]
         )
 
         # Chat submission
         chat_msg = chat_input.submit(
             fn=add_message, 
-            inputs=[chatbot, chat_input], 
+            inputs=[chatbot, chat_input, current_session_id], 
             outputs=[chatbot, chat_input]
         )
         bot_msg = chat_msg.then(
             fn=bot_response, 
-            inputs=[chatbot, rag_chain_state], 
+            inputs=[chatbot, current_session_id], 
             outputs=chatbot
         )
         bot_msg.then(lambda: gr.Textbox(interactive=True), None, [chat_input])
 
-        # Clear button
-        clear_btn.click(lambda: [], None, chatbot)
+        # Clear chat button
+        clear_chat_btn.click(
+            fn=clear_current_chat,
+            inputs=[current_session_id],
+            outputs=[chatbot, output_message]
+        )
+
+        # Delete session button
+        delete_session_btn.click(
+            fn=delete_current_session,
+            inputs=[session_dropdown, session_map_state],
+            outputs=[chatbot, current_session_id, output_message, session_dropdown]
+        ).then(
+            fn=refresh_session_list,
+            outputs=[session_dropdown, session_map_state]
+        )
 
     interface.launch(server_name="0.0.0.0", server_port=7000, theme=gr.themes.Soft())
 

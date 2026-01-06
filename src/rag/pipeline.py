@@ -87,10 +87,10 @@ def retrieve_relevant_chunks(question: str, session: RagSession, chat_history=No
     return context_entries
 
 
-def proceed_input(uploaded_files):
+def proceed_input(uploaded_files, document_name: str = None):
     """Main function to process uploaded files into a RAG chain."""
     try:
-        saved_files, file_group_name = validate_and_save_files(uploaded_files)
+        saved_files, collection_name, auto_document_name = validate_and_save_files(uploaded_files)
         docs = load_docs(saved_files)
         logging.info("Loaded %s documents from files", len(docs))
 
@@ -98,17 +98,22 @@ def proceed_input(uploaded_files):
             raise gr.Error("❌ No content to process. Please upload files.")
 
         splits = get_document_chunks(docs)
-        reset_embedding_store()
-        vectorstore = get_vector_store(splits, collection_name=file_group_name)
+        # Don't reset - allow multiple sessions to coexist
+        vectorstore = get_vector_store(splits, collection_name=collection_name)
         sparse_index = SparseIndex(splits)
         system_prompt = read_system_prompt("custom.yaml")
 
+        # Use auto-generated name (ignore user input)
+        doc_name = auto_document_name
+
         logging.info("RAG chain built successfully")
-        return RagSession(
+        rag_session = RagSession(
             rag_chain=build_rag_chain(system_prompt),
             vectorstore=vectorstore,
             sparse_index=sparse_index,
         )
+        
+        return rag_session, collection_name, doc_name
 
     except gr.Error:
         raise
