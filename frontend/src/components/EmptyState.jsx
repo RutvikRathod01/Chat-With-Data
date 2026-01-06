@@ -35,10 +35,10 @@ const EmptyState = () => {
               </div>
             </div>
             <h1 className="text-4xl font-bold text-gray-900">
-              Chat with Your Documents
+              Chat with Documents
             </h1>
             <p className="text-xl text-gray-600 max-w-lg mx-auto">
-              Upload your documents and start asking questions. Get instant, intelligent answers powered by advanced AI.
+              Upload documents and start asking questions. Get instant, intelligent answers powered by advanced AI.
             </p>
           </div>
 
@@ -76,7 +76,7 @@ const EmptyState = () => {
           {/* Info Text */}
           <div className="text-sm text-gray-500 max-w-md mx-auto pt-4">
             <p>
-              Your documents are processed securely and stored locally. Chat history is automatically saved for each session.
+              Your documents are processed securely.
             </p>
           </div>
         </div>

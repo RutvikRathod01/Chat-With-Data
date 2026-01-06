@@ -75,7 +75,7 @@ const Sidebar = ({ isOpen, onClose }) => {
           fixed lg:relative inset-y-0 left-0 z-50
           bg-gray-900 text-white
           transition-all duration-300 ease-in-out
-          ${isOpen ? 'w-80' : 'w-0 lg:w-16'}
+          ${isOpen ? 'w-80 translate-x-0' : 'w-80 -translate-x-full lg:translate-x-0 lg:w-16'}
           flex flex-col overflow-hidden
         `}
       >
@@ -99,10 +99,14 @@ const Sidebar = ({ isOpen, onClose }) => {
             <FaPencilAlt className="w-5 h-5 text-gray-400" />
           </button>
 
-          {/* Chats icon */}
-          <div className="p-3">
+          {/* Chats icon - clickable to open sidebar */}
+          <button
+            onClick={onClose}
+            className="p-3 hover:bg-gray-800 rounded-lg transition-colors"
+            title="View chats"
+          >
             <FaComments className="w-5 h-5 text-gray-400" />
-          </div>
+          </button>
         </div>
 
         {/* Expanded view - Full sidebar */}
@@ -198,14 +202,6 @@ const Sidebar = ({ isOpen, onClose }) => {
                 </div>
               ))
             )}
-          </div>
-
-          {/* Footer */}
-          <div className="p-4 border-t border-gray-700">
-            <div className="text-xs text-gray-400 text-center">
-              <p>RAG-powered Document Chat</p>
-              <p className="mt-1">Built with React & FastAPI</p>
-            </div>
           </div>
         </div>
       </aside>
