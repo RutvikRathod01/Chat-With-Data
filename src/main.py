@@ -120,7 +120,7 @@ def gradio_app():
             
             try:
                 # Process documents (document name is auto-generated)
-                rag_session, collection_name, doc_name = proceed_input(files)
+                rag_session, collection_name, doc_name, _ = proceed_input(files)
                 
                 # Create new session
                 session_id = session_manager.create_session(
@@ -203,7 +203,15 @@ def gradio_app():
             
             try:
                 # Get answer from RAG
-                answer = process_user_question(user_message, rag_session, history)
+                response_data = process_user_question(user_message, rag_session, history)
+                
+                if isinstance(response_data, dict):
+                    answer = response_data.get("answer", "")
+                    # Optionally append sources or rely on inline citations
+                    # sources = response_data.get("sources", [])
+                else:
+                    answer = str(response_data)
+                
                 history.append({"role": "assistant", "content": answer})
                 
                 # Save to database

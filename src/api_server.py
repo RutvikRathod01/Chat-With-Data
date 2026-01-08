@@ -56,6 +56,7 @@ class ChatResponse(BaseModel):
     """Response model for chat endpoint."""
     role: str
     content: str
+    sources: Optional[List[str]] = None
     timestamp: str
 
 
@@ -228,7 +229,7 @@ async def upload_documents(files: List[UploadFile] = File(...)):
         
         # Process documents using existing pipeline
         # This will save files properly to DATA_DIR with collection naming
-        rag_session, collection_name, doc_name = proceed_input(temp_files)
+        rag_session, collection_name, doc_name, _ = proceed_input(temp_files)
         
         # Create session
         session_id = session_manager.create_session(
@@ -291,7 +292,15 @@ async def chat(request: ChatRequest):
         ]
         
         # Get response from RAG
-        answer = process_user_question(message, rag_session, history_for_context)
+        response_data = process_user_question(message, rag_session, history_for_context)
+        
+        # Handle response (can be dict or string)
+        if isinstance(response_data, dict):
+            answer = response_data.get("answer", "")
+            sources = response_data.get("sources", [])
+        else:
+            answer = str(response_data)
+            sources = []
         
         # Save assistant response
         session_manager.save_message(session_id, "assistant", answer)
@@ -299,6 +308,7 @@ async def chat(request: ChatRequest):
         return {
             "role": "assistant",
             "content": answer,
+            "sources": sources,
             "timestamp": datetime.now().isoformat()
         }
         

@@ -28,17 +28,25 @@ class ChatStorage:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Sessions table
+            # Sessions table with documents column for multi-doc tracking
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
                     session_id TEXT PRIMARY KEY,
                     document_name TEXT NOT NULL,
                     collection_name TEXT NOT NULL,
+                    documents TEXT DEFAULT '[]',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     is_active INTEGER DEFAULT 1
                 )
             """)
+            
+            # Add documents column if it doesn't exist (for existing databases)
+            try:
+                cursor.execute("ALTER TABLE sessions ADD COLUMN documents TEXT DEFAULT '[]'")
+                logging.info("Added documents column to sessions table")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             
             # Messages table
             cursor.execute("""
@@ -61,17 +69,34 @@ class ChatStorage:
             conn.commit()
             logging.info("Database initialized successfully")
 
-    def create_session(self, session_id: str, document_name: str, collection_name: str) -> bool:
-        """Create a new chat session."""
+    def create_session(
+        self, 
+        session_id: str, 
+        document_name: str, 
+        collection_name: str,
+        documents: List[str] = None
+    ) -> bool:
+        """Create a new chat session with document tracking.
+        
+        Args:
+            session_id: Unique session identifier
+            document_name: Display name for the session
+            collection_name: Vector store collection name
+            documents: List of original document filenames
+        """
         try:
+            documents_json = json.dumps(documents or [])
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO sessions (session_id, document_name, collection_name)
-                    VALUES (?, ?, ?)
-                """, (session_id, document_name, collection_name))
+                    INSERT INTO sessions (session_id, document_name, collection_name, documents)
+                    VALUES (?, ?, ?, ?)
+                """, (session_id, document_name, collection_name, documents_json))
                 conn.commit()
-                logging.info("Created session: %s for document: %s", session_id, document_name)
+                logging.info(
+                    "Created session: %s for document: %s with %d documents", 
+                    session_id, document_name, len(documents or [])
+                )
                 return True
         except sqlite3.IntegrityError:
             logging.warning("Session %s already exists", session_id)
@@ -86,19 +111,26 @@ class ChatStorage:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT session_id, document_name, collection_name, created_at, last_updated
+                    SELECT session_id, document_name, collection_name, documents, created_at, last_updated
                     FROM sessions
                     WHERE session_id = ? AND is_active = 1
                 """, (session_id,))
                 
                 row = cursor.fetchone()
                 if row:
+                    # Parse documents JSON
+                    try:
+                        documents = json.loads(row[3]) if row[3] else []
+                    except (json.JSONDecodeError, TypeError):
+                        documents = []
+                    
                     return {
                         "session_id": row[0],
                         "document_name": row[1],
                         "collection_name": row[2],
-                        "created_at": row[3],
-                        "last_updated": row[4]
+                        "documents": documents,
+                        "created_at": row[4],
+                        "last_updated": row[5]
                     }
                 return None
         except Exception as e:

@@ -26,6 +26,7 @@ from retrieval.ranking import (
     format_context_with_metadata,
     merge_candidate_scores,
     rerank_with_cross_encoder,
+    extract_source_documents,
 )
 from vectorstore.chroma_store import get_vector_store, reset_embedding_store
 
@@ -140,8 +141,11 @@ def retrieve_relevant_chunks(question: str, session: RagSession, chat_history=No
 def proceed_input(uploaded_files, document_name: str = None):
     """Main function to process uploaded files into a RAG chain."""
     try:
-        saved_files, collection_name, auto_document_name = validate_and_save_files(uploaded_files)
-        docs = load_docs(saved_files)
+        # Unpack original filenames as well
+        saved_files, collection_name, auto_document_name, original_filenames = validate_and_save_files(uploaded_files)
+        
+        # Pass original filenames to loader
+        docs = load_docs(saved_files, original_filenames)
         logging.info("Loaded %s documents from files", len(docs))
 
         if not docs:
@@ -163,7 +167,7 @@ def proceed_input(uploaded_files, document_name: str = None):
             sparse_index=sparse_index,
         )
         
-        return rag_session, collection_name, doc_name
+        return rag_session, collection_name, doc_name, original_filenames
 
     except gr.Error:
         raise
@@ -173,7 +177,13 @@ def proceed_input(uploaded_files, document_name: str = None):
 
 
 def process_user_question(user_input, session: RagSession, chat_history=None):
-    """Process user question and get answer from RAG chain."""
+    """Process user question and get answer from RAG chain.
+    
+    Returns:
+        Dictionary containing:
+        - answer: The text response
+        - sources: List of source documents used
+    """
     try:
         if isinstance(user_input, list):
             user_input = " ".join(str(item) for item in user_input)
@@ -181,11 +191,15 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             user_input = str(user_input)
 
         if not user_input or not user_input.strip():
-            return "Please enter a valid question."
+            return {"answer": "Please enter a valid question.", "sources": []}
 
         logging.info("User Q: %s", user_input)
         relevant_context = retrieve_relevant_chunks(user_input, session, chat_history)
         logging.info("Number of context entries retrieved: %d", len(relevant_context))
+        
+        # Extract source documents
+        sources = extract_source_documents(relevant_context)
+        
         context_text = format_context_with_metadata(relevant_context)
         
         # Debug: Log the context being sent to LLM
@@ -199,20 +213,30 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             "history": history_text,
             "question": user_input,
         }
-        answer = session.rag_chain.invoke(payload)
-        logging.info("Answer generated successfully: %s chars", len(answer))
-        return answer
+        answer_text = session.rag_chain.invoke(payload)
+        logging.info("Answer generated successfully: %s chars", len(answer_text))
+        
+        return {
+            "answer": answer_text,
+            "sources": sources
+        }
+        
     except Exception as exc:  # pylint: disable=broad-except
         error_msg = str(exc)
         logging.error("Error processing question: %s", error_msg, exc_info=True)
 
+        user_friendly_error = f"Error: {error_msg}"
         if "replace" in error_msg:
-            return "Error: Document formatting issue. Please reprocess your documents."
+            user_friendly_error = "Error: Document formatting issue. Please reprocess your documents."
         if "API" in error_msg or "Groq" in error_msg:
-            return "Error: API connection issue. Please check your GROQ_API_KEY."
+            user_friendly_error = "Error: API connection issue. Please check your GROQ_API_KEY."
         if "Gemini" in error_msg or "Google" in error_msg:
-            return "Error: API connection issue. Please check your GEMINI_API_KEY."
-        return f"Error: {error_msg}"
+            user_friendly_error = "Error: API connection issue. Please check your GEMINI_API_KEY."
+            
+        return {
+            "answer": user_friendly_error,
+            "sources": []
+        }
 
 
 __all__ = [

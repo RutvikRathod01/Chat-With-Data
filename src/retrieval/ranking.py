@@ -184,24 +184,43 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS):
         reverse=True,
     )
 
+    # Interleave entries from clusters (Round-Robin) to ensure diverse sources
     final_entries = []
     token_count = 0
-    for cluster in sorted_clusters:
-        for entry in cluster:
-            if len(final_entries) >= max_chunks:
-                break
-            doc_tokens = count_tokens(entry["doc"])
-            if token_count + doc_tokens > CONTEXT_TOKEN_BUDGET and final_entries:
-                break
-            final_entries.append(entry)
-            token_count += doc_tokens
-        if len(final_entries) >= max_chunks:
-            break
+    
+    # Create iterators for each cluster
+    cluster_iters = [iter(cluster) for cluster in sorted_clusters]
+    active_clusters = len(cluster_iters)
+    
+    while active_clusters > 0 and len(final_entries) < max_chunks:
+        active_clusters = 0
+        for cluster_iter in cluster_iters:
+            try:
+                entry = next(cluster_iter)
+                active_clusters += 1
+                
+                # Check limits
+                if len(final_entries) >= max_chunks:
+                    break
+                    
+                doc_tokens = count_tokens(entry["doc"])
+                if token_count + doc_tokens > CONTEXT_TOKEN_BUDGET and final_entries:
+                    continue
+                    
+                final_entries.append(entry)
+                token_count += doc_tokens
+                
+            except StopIteration:
+                continue
 
     return final_entries
 
 
 def format_context_with_metadata(entries):
+    """Format context entries with metadata for LLM consumption.
+    
+    Includes document source information for proper attribution in responses.
+    """
     if not entries:
         return "No relevant context found in the uploaded documents."
 
@@ -209,18 +228,63 @@ def format_context_with_metadata(entries):
     for idx, entry in enumerate(entries, start=1):
         doc = entry["doc"]
         metadata = doc.metadata or {}
-        source = metadata.get("source") or metadata.get("chunk_id") or "unknown-source"
+        
+        # Get document name for source tracking (prioritize document_name)
+        doc_name = metadata.get("document_name") or metadata.get("source") or "unknown"
+        
         chunk_id = metadata.get("chunk_id", "unknown-chunk")
         source_type = metadata.get("source_type", "chunk")
         summary_tag = metadata.get("summary_of_section")
         score = entry.get("rerank_score") or entry.get("score") or 0.0
-        metadata_line = f"Source: {source} | Chunk: {chunk_id} | Type: {source_type} | Score: {score:.3f}"
+        page = metadata.get("page", "")
+        
+        # Build metadata line with clear document attribution
+        metadata_parts = [f"Document: {doc_name}"]
+        if page:
+            metadata_parts.append(f"Page: {page}")
+        metadata_parts.extend([
+            f"Chunk: {chunk_id}",
+            f"Type: {source_type}",
+            f"Score: {score:.3f}"
+        ])
         if summary_tag:
-            metadata_line += f" | Summary: {summary_tag}"
+            metadata_parts.append(f"Summary: {summary_tag}")
+            
+        metadata_line = " | ".join(metadata_parts)
         section_text = normalize_page_content(doc.page_content).strip()
-        sections.append(f"Context {idx} ({metadata_line}):\n{section_text}")
+        sections.append(f"[{doc_name}] Context {idx} ({metadata_line}):\n{section_text}")
 
     return "\n\n".join(sections)
+
+
+def extract_source_documents(entries) -> list:
+    """Extract unique source document names from context entries.
+    
+    Args:
+        entries: List of context entries with document metadata
+        
+    Returns:
+        List of unique document names that were used as sources
+    """
+    if not entries:
+        return []
+    
+    sources = []
+    seen = set()
+    
+    for entry in entries:
+        doc = entry.get("doc")
+        if not doc:
+            continue
+            
+        metadata = doc.metadata or {}
+        doc_name = metadata.get("document_name") or metadata.get("source") or "unknown"
+        
+        if doc_name not in seen:
+            seen.add(doc_name)
+            sources.append(doc_name)
+    
+    return sources
 
 
 __all__ = [
@@ -233,4 +297,5 @@ __all__ = [
     "count_tokens",
     "assemble_context_entries",
     "format_context_with_metadata",
+    "extract_source_documents",
 ]
