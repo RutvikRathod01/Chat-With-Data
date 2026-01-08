@@ -42,62 +42,44 @@ from vectorstore.chroma_store import get_vector_store, reset_embedding_store, ge
 from retrieval.answer_validation import is_counting_question
 
 
-def determine_retrieval_strategy(question: str, question_type: str = None):
+def determine_retrieval_strategy(question: str, strategy_hint: str = None, metadata_filters: dict = None):
     """
-    Determine retrieval strategy based on question type.
-    
-    Returns dict with:
-        - mode: 'exhaustive' or 'semantic'
-        - k: TopK value for semantic mode
-        - metadata_filter: Dict of metadata filters for exhaustive mode
+    Determine retrieval strategy based on LLM analysis or fallback logic.
     """
-    question_lower = question.lower()
+    # Trust the LLM hint if available
+    mode = strategy_hint or 'semantic'
     
-    # Check if it's a counting/enumeration question
-    is_counting = is_counting_question(question) or question_type in ['count', 'list']
-    
-    # Check for "list all" or "all projects" patterns
-    is_exhaustive = any([
-        'list all' in question_lower,
-        'all projects' in question_lower,
-        'how many projects' in question_lower,
-        'enumerate' in question_lower,
-        'total projects' in question_lower,
-        'what are all' in question_lower,
-    ])
-    
-    if is_counting or is_exhaustive:
-        # Use exhaustive retrieval with metadata filtering
-        metadata_filter = None
-        
-        # Determine what entity type to filter for
-        if 'project' in question_lower:
-            metadata_filter = {"contains_projects": True}
-        elif 'person' in question_lower or 'people' in question_lower:
-            metadata_filter = {"contains_persons": True}
-        elif 'location' in question_lower:
-            metadata_filter = {"contains_locations": True}
-        elif 'date' in question_lower or 'timeline' in question_lower:
-            metadata_filter = {"contains_dates": True}
+    if mode == 'exhaustive':
+        logging.info("Retrieval strategy: EXHAUSTIVE (LLM determined)")
+        # Map simple filters if provided
+        final_filters = {}
+        if metadata_filters:
+            # Convert simple keys to match vectorDB expected filters if needed
+            # For now, we assume the LLM might return "project": "name" which we can use
+            pass 
             
-        logging.info("Retrieval strategy: EXHAUSTIVE (metadata_filter=%s)", metadata_filter)
+        # Fallback metadata logic if LLM didn't provide specific filters but mode is exhaustive
+        if not metadata_filters:
+             question_lower = question.lower()
+             if 'project' in question_lower:
+                 final_filters = {"contains_projects": True}
+             # Add other static fallbacks only if strictly needed
+        
         return {
             'mode': 'exhaustive',
-            'k': None,  # No TopK limit
-            'metadata_filter': metadata_filter
+            'k': None,
+            'metadata_filter': final_filters
         }
     else:
-        # Use semantic TopK retrieval
-        # Adaptive k based on question specificity
-        if any(word in question_lower for word in ['what is', 'define', 'explain']):
-            k = 20  # Specific fact queries - smaller k
-        else:
-            k = 50  # Default semantic search
-            
-        logging.info("Retrieval strategy: SEMANTIC (k=%d)", k)
+        # Semantic Mode
+        k_value = 50
+        if any(word in question.lower() for word in ['specific', 'detail', 'precisely']):
+             k_value = 30 # Tighter search
+             
+        logging.info("Retrieval strategy: SEMANTIC (k=%d)", k_value)
         return {
             'mode': 'semantic',
-            'k': k,
+            'k': k_value,
             'metadata_filter': None
         }
 
@@ -185,33 +167,15 @@ def build_rag_chain(system_prompt, use_groq=None, use_gemini=None):
     return rag_chain
 
 
-def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None, document_filter=None, question_type=None):
+def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None, document_filter=None, strategy_hint=None, metadata_filters=None):
     """
     Retrieves the most relevant chunks based on query type and adaptive strategy.
-    
-    Uses:
-    1. Adaptive retrieval strategy (exhaustive vs semantic)
-    2. Query rewriting to generate variations
-    3. Dense (semantic) retrieval from vector store
-    4. Sparse (BM25-style) retrieval from TF-IDF index
-    5. Score merging and reranking
-    6. Deduplication and diversity assembly
-    
-    Args:
-        user_input: Original user question
-        session: RagSession with vectorstore and sparse index
-        chat_history: Chat history for context-aware rewriting
-        document_filter: Optional document name to filter results
-        question_type: Type of question from decomposition (count, list, etc.)
-        
-    Returns:
-        List of context entries with documents, scores, and metadata
     """
     print(f"--- DEBUG: START RETRIEVAL ---", flush=True)
     print(f"Query: '{user_input}'", flush=True)
     
     # Step 0: Determine retrieval strategy
-    strategy = determine_retrieval_strategy(user_input, question_type)
+    strategy = determine_retrieval_strategy(user_input, strategy_hint, metadata_filters)
     
     if strategy['mode'] == 'exhaustive':
         # EXHAUSTIVE MODE: Retrieve all matching chunks without TopK limit
@@ -473,9 +437,11 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             
             for sub_q in sub_questions:
                 question_text = sub_q["question"]
-                question_type = sub_q["type"]
+                strategy_hint = sub_q.get("strategy", "semantic")
+                filters_hint = sub_q.get("filters", {})
+                question_type = sub_q.get("type", "general")
                 
-                logging.info("Processing sub-question (%s): %s", question_type, question_text)
+                logging.info("Processing sub-question: %s (Strategy: %s)", question_text, strategy_hint)
                 
                 # Retrieve context for this specific sub-question
                 relevant_context = retrieve_relevant_chunks(
@@ -483,7 +449,8 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                     session, 
                     chat_history,
                     document_filter=doc_filter,
-                    question_type=question_type
+                    strategy_hint=strategy_hint,
+                    metadata_filters=filters_hint
                 )
                 
                 if not relevant_context:
@@ -533,16 +500,23 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
         
         else:
             # Single question - process normally
+            # Use the type/strategy determined by valid analysis
+            primary_intent = sub_questions[0]
+            strategy_hint = primary_intent.get("strategy", "semantic")
+            filters_hint = primary_intent.get("filters", {})
+            
             relevant_context = retrieve_relevant_chunks(
                 user_input, 
                 session, 
                 chat_history,
-                document_filter=doc_filter
+                document_filter=doc_filter,
+                strategy_hint=strategy_hint,
+                metadata_filters=filters_hint
             )
             logging.info("Number of context entries retrieved: %d", len(relevant_context))
             
-            # Determine retrieval mode used (check if it was exhaustive)
-            strategy = determine_retrieval_strategy(user_input, None)
+            # Determine retrieval mode used
+            strategy = determine_retrieval_strategy(user_input, strategy_hint, filters_hint)
             retrieval_mode = strategy['mode']
             
             # Extract source documents

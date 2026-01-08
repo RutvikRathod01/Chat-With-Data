@@ -6,15 +6,14 @@ be processed independently and then synthesized into a comprehensive answer.
 """
 
 import logging
-import re
-from typing import List, Dict, Optional
-
+from typing import List, Dict, Optional, Any
 
 from config.settings import USE_GROQ, USE_GEMINI, GROQ_MODEL, GEMINI_MODEL
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
+
 
 def get_llm():
     """Helper to get the configured LLM."""
@@ -23,107 +22,87 @@ def get_llm():
     elif USE_GROQ:
         return ChatGroq(model=GROQ_MODEL, temperature=0.0)
     return None
-    """Helper to get the configured LLM."""
-    if USE_GEMINI:
-        return ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0.0)
-    elif USE_GROQ:
-        return ChatGroq(model=GROQ_MODEL, temperature=0.0)
-    return None
 
-def detect_multi_intent_question(question: str) -> bool:
+
+def analyze_query(question: str) -> List[Dict[str, Any]]:
     """
-    Detect if a question contains multiple intents using LLM analysis.
-    For performance, we still do a quick regex check first for obvious cases.
+    Analyze a user query using an LLM to:
+    1. Decompose multi-intent questions.
+    2. Determine the best retrieval strategy (Exhaustive vs Semantic).
+    3. Extract metadata filters (e.g. project names, entities).
+    
+    This replaces static keyword matching with intelligent understanding.
     """
     # Fast path: simple questions probably don't need LLM
     if len(question.split()) < 5 and "and" not in question.lower():
-        return False
+        # Even for fast path, we return the new structure
+        return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
 
-    try:
-        llm = get_llm()
-        if not llm:
-            return False 
-            
-        prompt = ChatPromptTemplate.from_template(
-            """Analyze if the following question asks for multiple distinct pieces of information that would require separate searches.
-            Return ONLY textual JSON: {{"is_multi_intent": true/false}}
-            
-            Question: {question}
-            """
-        )
-        chain = prompt | llm | JsonOutputParser()
-        result = chain.invoke({"question": question})
-        return result.get("is_multi_intent", False)
-    except Exception as e:
-        logging.warning(f"LLM intent detection failed: {e}. Falling back to heuristic.")
-        # Fallback to simple heuristic
-        return " and " in question.lower() or "?" in question.replace(question[-1], "")
-
-def decompose_question(question: str) -> List[Dict[str, str]]:
-    """
-    Decompose a complex multi-intent question into simpler sub-questions using LLM.
-    """
-    # Fast check
-    if not detect_multi_intent_question(question):
-         return [{"question": question, "type": "single", "original": True}]
-
-    logging.info("Decomposing complex question with LLM: %s", question)
+    logging.info("Analyzing query with LLM: %s", question)
     
     try:
         llm = get_llm()
         if not llm:
-             raise ValueError("No LLM configured")
+             # Fallback to basic structure if no LLM
+             return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
 
         prompt = ChatPromptTemplate.from_template(
-            """Break down the following complex user question into a list of atomic, self-contained sub-questions.
-            Each sub-question should be standalone and contain all necessary context.
-            Identify the type of each question (count, timeline, location, listing, general).
+            """Analyze the following user question for a RAG system.
             
-            Output strictly JSON format:
+            Tasks:
+            1. If it contains multiple distinct questions, break it down.
+            2. For each question, decide the retrieval strategy:
+               - "exhaustive": For "how many", "list all", "summarize all", "what are the projects", or comprehensive searches.
+               - "semantic": For specific fact retrieval like "who is the lead", "what is the budget of X".
+            3. Extract filters if present (e.g., project names, specific locations).
+            
+            Output strictly JSON:
             {{
                 "sub_questions": [
-                    {{"question": "first sub-question?", "type": "topic_type"}},
-                    {{"question": "second sub-question?", "type": "topic_type"}}
+                    {{
+                        "question": "text of sub question",
+                        "type": "count|list|timeline|general",
+                        "strategy": "exhaustive|semantic",
+                        "filters": {{"project": "name", "doc_type": "budget/etc"}}
+                    }}
                 ]
             }}
             
-            Original Question: {question}
+            User Question: {question}
             """
         )
         
         chain = prompt | llm | JsonOutputParser()
         result = chain.invoke({"question": question})
         
-        sub_questions = []
-        for item in result.get("sub_questions", []):
-            sub_questions.append({
-                "question": item.get("question"),
-                "type": item.get("type", "general"),
-                "original": False
-            })
-            
+        sub_questions = result.get("sub_questions", [])
+        
         if not sub_questions:
-            # Fallback if parsing returned empty
-            return [{"question": question, "type": "single", "original": True}]
+            return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
             
-        logging.info("LLM decomposed into: %s", sub_questions)
+        logging.info("LLM Analysis Result: %s", sub_questions)
         return sub_questions
 
     except Exception as e:
-        logging.error(f"LLM decomposition failed: {e}. Returning original.")
-        return [{"question": question, "type": "single", "original": True}]
+        logging.error(f"LLM query analysis failed: {e}. Returning default.")
+        return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
+
+
+def decompose_question(question: str) -> List[Dict[str, Any]]:
+    """Backward compatibility wrapper."""
+    return analyze_query(question)
+
+
+def detect_multi_intent_question(question: str) -> bool:
+    """Deprecated: Logic is now handled by analyze_query."""
+    return " and " in question.lower() or "?" in question.replace(question[-1], "")
 
 
 def extract_document_filter_from_question(question: str) -> Optional[str]:
     """
     Extract document name if the question explicitly mentions a document.
-    
-    Args:
-        question: The user's question
-        
-    Returns:
-        Document name if mentioned, None otherwise
     """
+    import re
     question_lower = question.lower()
     
     # Common patterns for document references
@@ -147,13 +126,6 @@ def extract_document_filter_from_question(question: str) -> Optional[str]:
 def synthesize_answers(sub_answers: List[Dict[str, str]], original_question: str) -> str:
     """
     Synthesize multiple sub-answers into a coherent response.
-    
-    Args:
-        sub_answers: List of {"question": str, "answer": str, "sources": List[str]}
-        original_question: The original complex question
-        
-    Returns:
-        Synthesized answer combining all sub-answers
     """
     if not sub_answers:
         return "No information found for this question."
@@ -190,6 +162,7 @@ def synthesize_answers(sub_answers: List[Dict[str, str]], original_question: str
 __all__ = [
     "detect_multi_intent_question",
     "decompose_question",
+    "analyze_query",
     "extract_document_filter_from_question",
     "synthesize_answers",
 ]
