@@ -94,9 +94,68 @@ def get_vector_store(splits, collection_name):
     return vectorstore
 
 
+def get_all_chunks_by_metadata(vectorstore, metadata_filter=None, document_filter=None):
+    """
+    Retrieve all chunks matching metadata filter without TopK limits.
+    Used for exhaustive retrieval in counting/enumeration queries.
+    
+    Args:
+        vectorstore: Chroma vector store instance
+        metadata_filter: Dict of metadata filters (e.g., {"contains_projects": True})
+        document_filter: Specific document name to filter by (handled in post-processing)
+        
+    Returns:
+        List of documents with scores (score set to 1.0 for exhaustive retrieval)
+    """
+    from langchain_core.documents import Document
+    
+    try:
+        # Use metadata_filter only - document filtering done in post-processing
+        filter_to_use = {}
+        if metadata_filter:
+            filter_to_use.update(metadata_filter)
+            
+        logging.info("Exhaustive retrieval with metadata_filter: %s, document_filter: %s", 
+                    metadata_filter, document_filter)
+        
+        # Get all matching documents without k limit
+        if filter_to_use:
+            results = vectorstore.get(where=filter_to_use)
+        else:
+            # No metadata filter - get all documents
+            results = vectorstore.get()
+            
+        # Convert to (Document, score) tuples
+        docs_with_scores = []
+        
+        if results and 'documents' in results:
+            # Log available document names for debugging
+            available_docs = set()
+            for i, doc_text in enumerate(results['documents']):
+                metadata = results['metadatas'][i] if 'metadatas' in results else {}
+                doc_name = metadata.get('document_name', 'unknown')
+                available_docs.add(doc_name)
+                
+                doc = Document(page_content=doc_text, metadata=metadata)
+                docs_with_scores.append((doc, 1.0))
+            
+            logging.info("Exhaustive retrieval found %d chunks from documents: %s", 
+                        len(docs_with_scores), list(available_docs)[:10])
+        else:
+            logging.warning("Exhaustive retrieval got empty results from vectorstore.get()")
+                
+        return docs_with_scores
+        
+    except Exception as exc:
+        logging.error("Error in exhaustive retrieval: %s", str(exc))
+        # Fall back to empty list
+        return []
+
+
 __all__ = [
     "get_chroma_settings",
     "get_session_store_dir",
     "reset_embedding_store",
+    "get_all_chunks_by_metadata",
     "get_vector_store",
 ]

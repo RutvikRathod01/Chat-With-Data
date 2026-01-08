@@ -38,7 +38,68 @@ from retrieval.ranking import (
     rerank_with_cross_encoder,
     extract_source_documents,
 )
-from vectorstore.chroma_store import get_vector_store, reset_embedding_store
+from vectorstore.chroma_store import get_vector_store, reset_embedding_store, get_all_chunks_by_metadata
+from retrieval.answer_validation import is_counting_question
+
+
+def determine_retrieval_strategy(question: str, question_type: str = None):
+    """
+    Determine retrieval strategy based on question type.
+    
+    Returns dict with:
+        - mode: 'exhaustive' or 'semantic'
+        - k: TopK value for semantic mode
+        - metadata_filter: Dict of metadata filters for exhaustive mode
+    """
+    question_lower = question.lower()
+    
+    # Check if it's a counting/enumeration question
+    is_counting = is_counting_question(question) or question_type in ['count', 'list']
+    
+    # Check for "list all" or "all projects" patterns
+    is_exhaustive = any([
+        'list all' in question_lower,
+        'all projects' in question_lower,
+        'how many projects' in question_lower,
+        'enumerate' in question_lower,
+        'total projects' in question_lower,
+        'what are all' in question_lower,
+    ])
+    
+    if is_counting or is_exhaustive:
+        # Use exhaustive retrieval with metadata filtering
+        metadata_filter = None
+        
+        # Determine what entity type to filter for
+        if 'project' in question_lower:
+            metadata_filter = {"contains_projects": True}
+        elif 'person' in question_lower or 'people' in question_lower:
+            metadata_filter = {"contains_persons": True}
+        elif 'location' in question_lower:
+            metadata_filter = {"contains_locations": True}
+        elif 'date' in question_lower or 'timeline' in question_lower:
+            metadata_filter = {"contains_dates": True}
+            
+        logging.info("Retrieval strategy: EXHAUSTIVE (metadata_filter=%s)", metadata_filter)
+        return {
+            'mode': 'exhaustive',
+            'k': None,  # No TopK limit
+            'metadata_filter': metadata_filter
+        }
+    else:
+        # Use semantic TopK retrieval
+        # Adaptive k based on question specificity
+        if any(word in question_lower for word in ['what is', 'define', 'explain']):
+            k = 20  # Specific fact queries - smaller k
+        else:
+            k = 50  # Default semantic search
+            
+        logging.info("Retrieval strategy: SEMANTIC (k=%d)", k)
+        return {
+            'mode': 'semantic',
+            'k': k,
+            'metadata_filter': None
+        }
 
 
 def format_chat_history(chat_history, limit=6):
@@ -124,80 +185,180 @@ def build_rag_chain(system_prompt, use_groq=None, use_gemini=None):
     return rag_chain
 
 
-def retrieve_relevant_chunks(question: str, session: RagSession, chat_history=None, document_filter: str = None):
-    """Retrieve relevant chunks with enhanced multi-document support.
+def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None, document_filter=None, question_type=None):
+    """
+    Retrieves the most relevant chunks based on query type and adaptive strategy.
     
-    Uses multiple query variations and ensures document diversity in results.
+    Uses:
+    1. Adaptive retrieval strategy (exhaustive vs semantic)
+    2. Query rewriting to generate variations
+    3. Dense (semantic) retrieval from vector store
+    4. Sparse (BM25-style) retrieval from TF-IDF index
+    5. Score merging and reranking
+    6. Deduplication and diversity assembly
     
     Args:
-        question: User's question
-        session: RAG session with vectorstore
-        chat_history: Chat history for context
+        user_input: Original user question
+        session: RagSession with vectorstore and sparse index
+        chat_history: Chat history for context-aware rewriting
         document_filter: Optional document name to filter results
-    
-    Returns:
-        List of context entries with documents and scores
-    """
-    rewritten_query = rewrite_query(question, chat_history)
-    queries = generate_query_variations(rewritten_query, chat_history) or [rewritten_query]
-    logging.info("Rewritten query: %s", rewritten_query)
-    logging.info("Generated %d query variations for comprehensive retrieval", len(queries))
-
-    # Collect dense candidates from all query variations
-    dense_candidates = []
-    dense_docs_seen = set()
-    
-    for query in queries:
-        # If document filter is specified, apply it during retrieval
-        if document_filter:
-            hits = session.vectorstore.similarity_search_with_score(
-                query, 
-                k=DENSE_CANDIDATE_K,
-                filter={"document_name": document_filter}
-            )
-        else:
-            hits = session.vectorstore.similarity_search_with_score(query, k=DENSE_CANDIDATE_K)
+        question_type: Type of question from decomposition (count, list, etc.)
         
-        for doc, score in hits:
-            doc_id = id(doc)
-            if doc_id not in dense_docs_seen:
-                # Apply document filter if specified (for vectorstores that don't support native filtering)
-                if document_filter:
-                    doc_name = doc.metadata.get("document_name", "")
-                    if document_filter.lower() not in doc_name.lower():
-                        continue
+    Returns:
+        List of context entries with documents, scores, and metadata
+    """
+    # Step 0: Determine retrieval strategy
+    strategy = determine_retrieval_strategy(user_input, question_type)
+    
+    if strategy['mode'] == 'exhaustive':
+        # EXHAUSTIVE MODE: Retrieve all matching chunks without TopK limit
+        logging.info("Using EXHAUSTIVE retrieval mode for counting/enumeration query")
+        logging.info("Document filter: %s, Metadata filter: %s", document_filter, strategy['metadata_filter'])
+        
+        exhaustive_results = get_all_chunks_by_metadata(
+            session.vectorstore,
+            metadata_filter=strategy['metadata_filter'],
+            document_filter=document_filter
+        )
+        
+        # Convert to candidate format
+        candidates = []
+        for doc, score in exhaustive_results:
+            candidates.append({
+                "doc": doc,
+                "score": score,
+                "source": "exhaustive"
+            })
+            
+        logging.info("Exhaustive retrieval: %d candidates", len(candidates))
+        
+        # Apply document filter in post-processing (more reliable than ChromaDB filtering)
+        if document_filter:
+            # Collect all unique document names for debugging
+            all_doc_names = set(c["doc"].metadata.get("document_name", "") for c in candidates)
+            logging.info("Available documents before filtering: %s", list(all_doc_names))
+            
+            filtered = []
+            doc_filter_lower = document_filter.lower()
+            # Remove file extension and common separators for flexible matching
+            doc_filter_base = doc_filter_lower.replace('.pdf', '').replace('.docx', '').replace('.xlsx', '')
+            doc_filter_base = doc_filter_base.replace('_', ' ').replace('-', ' ')
+            
+            for candidate in candidates:
+                doc_name = candidate["doc"].metadata.get("document_name", "")
+                doc_name_lower = doc_name.lower()
+                doc_name_base = doc_name_lower.replace('.pdf', '').replace('.docx', '').replace('.xlsx', '')
+                doc_name_base = doc_name_base.replace('_', ' ').replace('-', ' ')
                 
-                dense_candidates.append((doc, score))
-                dense_docs_seen.add(doc_id)
+                # Multiple matching strategies
+                matched = False
+                if doc_filter_lower == doc_name_lower:
+                    matched = True
+                elif doc_filter_base == doc_name_base:
+                    matched = True
+                elif doc_filter_lower in doc_name_lower:
+                    matched = True
+                elif doc_name_lower in doc_filter_lower:
+                    matched = True
+                elif doc_filter_base and doc_name_base and (
+                    doc_filter_base in doc_name_base or doc_name_base in doc_filter_base
+                ):
+                    matched = True
+                
+                if matched:
+                    filtered.append(candidate)
+                else:
+                    logging.debug("Filtered out: %s (looking for: %s)", doc_name, document_filter)
+            
+            logging.info("After document filter '%s': %d candidates (from %d total)", 
+                        document_filter, len(filtered), len(candidates))
+            
+            if len(filtered) == 0:
+                logging.warning("⚠️ Document filter '%s' matched 0 documents!", document_filter)
+                logging.warning("⚠️ Available documents: %s", list(all_doc_names))
+                logging.warning("⚠️ Proceeding WITHOUT document filter to get all results")
+                # Don't filter - return all candidates to avoid empty results
+                filtered = candidates
+            
+            candidates = filtered
+        
+        # For exhaustive mode, skip reranking to preserve all results
+        # Use higher threshold to keep more diverse content
+        unique_entries = filter_near_duplicates(candidates, similarity_threshold=0.90)
+        
+        # For exhaustive mode, bypass normal limits to get ALL relevant content
+        context_entries = assemble_context_entries(unique_entries, max_chunks=100, exhaustive_mode=True)
+        
+        logging.info("Exhaustive mode - Final context entries: %d", len(context_entries))
+        if len(context_entries) == 0:
+            logging.warning("⚠️ Exhaustive retrieval returned 0 results! Check metadata and filters.")
+        return context_entries
     
-    logging.info("Collected %d unique dense candidates from %d queries", len(dense_candidates), len(queries))
+    else:
+        # SEMANTIC MODE: Use TopK with query variations
+        logging.info("Using SEMANTIC retrieval mode with k=%d", strategy['k'])
+        retrieval_k = strategy['k']  # Use adaptive k value
+        
+        rewritten_query = rewrite_query(user_input, chat_history)
+        queries = generate_query_variations(rewritten_query, chat_history) or [rewritten_query]
+        logging.info("Rewritten query: %s", rewritten_query)
+        logging.info("Generated %d query variations for comprehensive retrieval", len(queries))
 
-    # Get sparse candidates
-    sparse_candidates = session.sparse_index.query(rewritten_query, top_k=DENSE_CANDIDATE_K)
-    
-    # Apply document filter to sparse candidates
-    if document_filter:
-        sparse_candidates = [
-            (doc, score) for doc, score in sparse_candidates
-            if document_filter.lower() in doc.metadata.get("document_name", "").lower()
-        ]
-    
-    logging.info("Collected %d sparse candidates", len(sparse_candidates))
-    
-    # Merge and score
-    merged = merge_candidate_scores(dense_candidates, sparse_candidates)
-    logging.info("Merged candidates: %d", len(merged))
+        # Collect dense candidates from all query variations
+        dense_candidates = []
+        dense_docs_seen = set()
+        
+        for query in queries:
+            # If document filter is specified, apply it during retrieval
+            if document_filter:
+                hits = session.vectorstore.similarity_search_with_score(
+                    query, 
+                    k=retrieval_k,
+                    filter={"document_name": document_filter}
+                )
+            else:
+                hits = session.vectorstore.similarity_search_with_score(query, k=retrieval_k)
+            
+            for doc, score in hits:
+                doc_id = id(doc)
+                if doc_id not in dense_docs_seen:
+                    # Apply document filter if specified (for vectorstores that don't support native filtering)
+                    if document_filter:
+                        doc_name = doc.metadata.get("document_name", "")
+                        if document_filter.lower() not in doc_name.lower():
+                            continue
+                    
+                    dense_candidates.append((doc, score))
+                    dense_docs_seen.add(doc_id)
+        
+        logging.info("Collected %d unique dense candidates from %d queries", len(dense_candidates), len(queries))
 
-    if not merged and dense_candidates:
-        merged = [{"doc": doc, "score": score} for doc, score in dense_candidates]
+        # Get sparse candidates
+        sparse_candidates = session.sparse_index.query(rewritten_query, top_k=retrieval_k)
+        
+        # Apply document filter to sparse candidates
+        if document_filter:
+            sparse_candidates = [
+                (doc, score) for doc, score in sparse_candidates
+                if document_filter.lower() in doc.metadata.get("document_name", "").lower()
+            ]
+        
+        logging.info("Collected %d sparse candidates", len(sparse_candidates))
+        
+        # Merge and score
+        merged = merge_candidate_scores(dense_candidates, sparse_candidates)
+        logging.info("Merged candidates: %d", len(merged))
 
-    # Rerank with cross-encoder
-    reranked = rerank_with_cross_encoder(rewritten_query, merged)
-    logging.info("Reranked to top %d candidates", len(reranked))
-    
-    # Filter duplicates
-    unique_entries = filter_near_duplicates(reranked)
-    logging.info("After deduplication: %d unique entries", len(unique_entries))
+        if not merged and dense_candidates:
+            merged = [{"doc": doc, "score": score} for doc, score in dense_candidates]
+
+        # Rerank with cross-encoder
+        reranked = rerank_with_cross_encoder(rewritten_query, merged)
+        logging.info("Reranked to top %d candidates", len(reranked))
+        
+        # Filter duplicates
+        unique_entries = filter_near_duplicates(reranked)
+        logging.info("After deduplication: %d unique entries", len(unique_entries))
     
     # Assemble context with document diversity
     context_entries = assemble_context_entries(unique_entries)
@@ -298,7 +459,8 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                     question_text, 
                     session, 
                     chat_history,
-                    document_filter=doc_filter
+                    document_filter=doc_filter,
+                    question_type=question_type
                 )
                 
                 if not relevant_context:
@@ -316,11 +478,10 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                 # Format context
                 context_text = format_context_with_metadata(relevant_context)
                 
-                # Get answer from LLM
-                history_text = format_chat_history(chat_history)
+                # Get answer from LLM (history isolated)
                 payload = {
                     "context": context_text,
-                    "history": history_text,
+                    "history": "None",  # Isolated - rely only on retrieved context
                     "question": question_text,
                 }
                 
@@ -355,6 +516,10 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             )
             logging.info("Number of context entries retrieved: %d", len(relevant_context))
             
+            # Determine retrieval mode used (check if it was exhaustive)
+            strategy = determine_retrieval_strategy(user_input, None)
+            retrieval_mode = strategy['mode']
+            
             # Extract source documents
             sources = extract_source_documents(relevant_context)
             
@@ -366,17 +531,23 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             logging.info(context_text)
             logging.info("=" * 80)
             
-            history_text = format_chat_history(chat_history)
+            # History is only used for query rewriting, not sent to LLM
+            # This prevents conversation memory from contaminating answers
             payload = {
                 "context": context_text,
-                "history": history_text,
+                "history": "None",  # Isolated - rely only on retrieved context
                 "question": user_input,
             }
             answer_text = session.rag_chain.invoke(payload)
             logging.info("Answer generated successfully: %s chars", len(answer_text))
             
-            # Validate answer completeness
-            validation_result = validate_context_completeness(user_input, relevant_context, answer_text)
+            # Validate answer completeness with retrieval mode context
+            validation_result = validate_context_completeness(
+                user_input, 
+                relevant_context, 
+                answer_text,
+                retrieval_mode=retrieval_mode
+            )
             logging.info("Answer validation: confidence=%s, complete=%s", 
                         validation_result["confidence"], validation_result["is_complete"])
             

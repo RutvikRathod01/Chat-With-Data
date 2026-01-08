@@ -164,11 +164,16 @@ def count_tokens(item):
     return len(text.split())
 
 
-def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS):
+def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS, exhaustive_mode=False):
     """Assemble context entries with document diversity to ensure multi-document coverage.
     
     Uses round-robin selection across documents to ensure all source documents
     are represented in the final context, which is critical for multi-document queries.
+    
+    Args:
+        entries: List of candidate entries with docs and scores
+        max_chunks: Maximum number of chunks to return
+        exhaustive_mode: If True, bypass token budget limits for complete results
     """
     if not entries:
         return []
@@ -201,6 +206,10 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS):
     final_entries = []
     token_count = 0
     
+    # In exhaustive mode, use much higher token budget to get complete results
+    effective_token_budget = CONTEXT_TOKEN_BUDGET * 3 if exhaustive_mode else CONTEXT_TOKEN_BUDGET
+    logging.info("Token budget: %d (exhaustive=%s)", effective_token_budget, exhaustive_mode)
+    
     # Calculate minimum chunks per document to ensure fair representation
     min_chunks_per_doc = max(2, max_chunks // len(sorted_clusters)) if sorted_clusters else 1
     
@@ -212,8 +221,11 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS):
                 break
                 
             doc_tokens = count_tokens(entry["doc"])
-            if token_count + doc_tokens > CONTEXT_TOKEN_BUDGET and final_entries:
+            # In exhaustive mode, be more lenient with token budget
+            if not exhaustive_mode and token_count + doc_tokens > effective_token_budget and final_entries:
                 continue
+            elif exhaustive_mode and token_count + doc_tokens > effective_token_budget:
+                logging.debug("Exhaustive mode: Including chunk despite token budget (total: %d)", token_count + doc_tokens)
                 
             final_entries.append(entry)
             token_count += doc_tokens
@@ -238,7 +250,8 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS):
                         break
                         
                     doc_tokens = count_tokens(entry["doc"])
-                    if token_count + doc_tokens > CONTEXT_TOKEN_BUDGET:
+                    # In exhaustive mode, be more lenient with token budget
+                    if not exhaustive_mode and token_count + doc_tokens > effective_token_budget:
                         continue
                         
                     final_entries.append(entry)

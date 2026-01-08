@@ -41,7 +41,7 @@ def is_counting_question(question: str) -> bool:
     return False
 
 
-def validate_context_completeness(question: str, context_entries: List[Dict], answer: str) -> Dict:
+def validate_context_completeness(question: str, context_entries: List[Dict], answer: str, retrieval_mode: str = "semantic") -> Dict:
     """
     Validate if the retrieved context is likely complete for the question.
     
@@ -50,8 +50,9 @@ def validate_context_completeness(question: str, context_entries: List[Dict], an
     
     Args:
         question: User's question
-        context_entries: Retrieved context entries
-        answer: Generated answer from LLM
+        context_entries: Retrieved context chunks
+        answer: Generated answer text
+        retrieval_mode: 'semantic' or 'exhaustive' - affects validation threshold
         
     Returns:
         Dictionary with:
@@ -94,8 +95,11 @@ def validate_context_completeness(question: str, context_entries: List[Dict], an
     warning = None
     is_complete = True
     
-    # Check 1: Very few chunks might mean incomplete retrieval
-    if num_chunks < 5:
+    # Check 1: Limited context chunks (adaptive threshold)
+    # Use lower threshold for exhaustive mode since it retrieves all matching chunks
+    threshold = 2 if retrieval_mode == "exhaustive" else 3
+    
+    if num_chunks < threshold:
         confidence = "medium"
         warning = "Note: Retrieved context is limited. If you expected more results, try rephrasing your question."
         is_complete = False
