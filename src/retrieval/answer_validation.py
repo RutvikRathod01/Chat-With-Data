@@ -13,6 +13,7 @@ from typing import List, Dict
 def is_counting_question(question: str) -> bool:
     """
     Detect if a question asks for counting or listing.
+    Uses basic linguistic patterns without domain-specific assumptions.
     
     Args:
         question: User's question
@@ -22,16 +23,17 @@ def is_counting_question(question: str) -> bool:
     """
     question_lower = question.lower()
     
+    # Generic patterns that work across all domains
     counting_patterns = [
         r'\bhow many\b',
         r'\bcount\b',
         r'\bnumber of\b',
         r'\bhow much\b',
         r'\blist all\b',
-        r'\ball\b.*\b(projects|items|documents|names|dates|locations)\b',
         r'\bwhat are all\b',
         r'\benumerate\b',
-        r'\btotal\b.*\b(projects|items|documents)\b',
+        r'\btotal\b',
+        r'\ball\b.*\b(the|of)\b',  # "all the" or "all of" patterns
     ]
     
     for pattern in counting_patterns:

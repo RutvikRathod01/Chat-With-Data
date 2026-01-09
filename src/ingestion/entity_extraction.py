@@ -40,16 +40,15 @@ def extract_project_names(text: str) -> List[str]:
         if len(project_name) > 8 and len(project_name) < 100:  # Reasonable length
             projects.add(project_name)
     
-    # Pattern 2: Numbered lists (often project listings)
+    # Pattern 2: Numbered lists (often entity listings)
     # e.g., "1. AI-Powered Document Intelligence Platform"
-    numbered_pattern = r'^\s*\d+[\.)]\s+([A-Z][A-Za-z0-9\s\-&,]{8,99})(?:\n|$)'
+    numbered_pattern = r'^\s*\d+[\.\)]\s+([A-Z][A-Za-z0-9\s\-&,]{8,99})(?:\n|$)'
     for match in re.finditer(numbered_pattern, text, re.MULTILINE):
         project_name = match.group(1).strip()
-        # Filter out common non-project patterns and short matches
-        if not re.match(r'^(Introduction|Overview|Conclusion|Summary|Background|The|In|On)', project_name):
-            # Must contain project-related keywords
-            if any(keyword in project_name.lower() for keyword in ['system', 'platform', 'solution', 'management', 'service', 'project']):
-                projects.add(project_name)
+        # Filter out common section headers but accept any titled entities
+        if not re.match(r'^(Introduction|Overview|Conclusion|Summary|Background|References|Appendix|The|In|On|At|For)\b', project_name):
+            # Accept any properly capitalized numbered items (domain-agnostic)
+            projects.add(project_name)
     
     # Pattern 3: Look for phrases with "Project" or "System" in them (must be title case)
     project_system_pattern = r'\b([A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){1,}(?:\s+(?:Project|System|Platform|Solution|Management|Service))\b)'

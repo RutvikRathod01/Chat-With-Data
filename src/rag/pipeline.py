@@ -44,26 +44,17 @@ from retrieval.answer_validation import is_counting_question
 
 def determine_retrieval_strategy(question: str, strategy_hint: str = None, metadata_filters: dict = None):
     """
-    Determine retrieval strategy based on LLM analysis or fallback logic.
+    Determine retrieval strategy based on LLM analysis.
+    Dynamic approach - no hardcoded keywords, fully trusts LLM analysis.
     """
-    # Trust the LLM hint if available
+    # Trust the LLM analysis completely
     mode = strategy_hint or 'semantic'
     
     if mode == 'exhaustive':
         logging.info("Retrieval strategy: EXHAUSTIVE (LLM determined)")
-        # Map simple filters if provided
-        final_filters = {}
-        if metadata_filters:
-            # Convert simple keys to match vectorDB expected filters if needed
-            # For now, we assume the LLM might return "project": "name" which we can use
-            pass 
-            
-        # Fallback metadata logic if LLM didn't provide specific filters but mode is exhaustive
-        if not metadata_filters:
-             question_lower = question.lower()
-             if 'project' in question_lower:
-                 final_filters = {"contains_projects": True}
-             # Add other static fallbacks only if strictly needed
+        
+        # Use filters provided by LLM analysis
+        final_filters = metadata_filters or {}
         
         return {
             'mode': 'exhaustive',
@@ -71,10 +62,8 @@ def determine_retrieval_strategy(question: str, strategy_hint: str = None, metad
             'metadata_filter': final_filters
         }
     else:
-        # Semantic Mode
+        # Semantic Mode - use standard k value
         k_value = 50
-        if any(word in question.lower() for word in ['specific', 'detail', 'precisely']):
-             k_value = 30 # Tighter search
              
         logging.info("Retrieval strategy: SEMANTIC (k=%d)", k_value)
         return {
@@ -416,13 +405,15 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
         print("----- DEBUG: START QUERY PROCESSING -----", flush=True)
         print(f"User Q: {user_input}", flush=True)
         
+        # Always use LLM to analyze query - this is the primary path
+        # LLM determines strategy, filters, and multi-intent decomposition
+        from retrieval.question_decomposition import analyze_query
+        sub_questions = analyze_query(user_input)
+        
         # Check for explicit document filter in the question
         doc_filter = extract_document_filter_from_question(user_input)
         if doc_filter:
             logging.info("Detected document filter: %s", doc_filter)
-        
-        # Decompose question if it has multiple intents
-        sub_questions = decompose_question(user_input)
         
         if len(sub_questions) > 1:
             print(f"--- DEBUG: MULTI-INTENT DETECTED ---", flush=True)
