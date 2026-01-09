@@ -51,19 +51,25 @@ def analyze_query(question: str) -> List[Dict[str, Any]]:
             
             Tasks:
             1. If it contains multiple distinct questions, break it down.
-            2. For each question, decide the retrieval strategy:
-               - "exhaustive": For "how many", "list all", "summarize all", "what are the projects", or comprehensive searches.
-               - "semantic": For specific fact retrieval like "who is the lead", "what is the budget of X".
-            3. Extract filters if present (e.g., project names, specific locations).
+            2. IMPORTANT: When breaking down questions, resolve pronouns (like "them", "it", "they") 
+               by adding context from the original question. For example:
+               - "How many projects? Give me names of them" → "How many projects?", "Give me names of the projects"
+               - "Who is the lead? What is their role?" → "Who is the lead?", "What is the role of the lead?"
+            3. For each question, decide the retrieval strategy:
+               - "exhaustive": For "how many", "list all", "summarize all", "what are the projects", or counting/listing queries.
+               - "semantic": For specific fact retrieval like "details of Project X", "who is the lead", "what is the budget".
+            4. Extract filters ONLY for explicit structural attributes (e.g. "section: budget", "type: table").
+               IMPORTANT: Do NOT create metadata filters for 'project', 'person', 'location', or 'date'. 
+               These are handled by the search content, not metadata keys. Return empty filters {} for these.
             
             Output strictly JSON:
             {{
                 "sub_questions": [
                     {{
-                        "question": "text of sub question",
+                        "question": "text of sub question with pronouns resolved",
                         "type": "count|list|timeline|general",
                         "strategy": "exhaustive|semantic",
-                        "filters": {{"project": "name", "doc_type": "budget/etc"}}
+                        "filters": {{}}
                     }}
                 ]
             }}
@@ -126,6 +132,7 @@ def extract_document_filter_from_question(question: str) -> Optional[str]:
 def synthesize_answers(sub_answers: List[Dict[str, str]], original_question: str) -> str:
     """
     Synthesize multiple sub-answers into a coherent response.
+    Combines all sub-answers intelligently without losing information.
     """
     if not sub_answers:
         return "No information found for this question."
@@ -135,26 +142,41 @@ def synthesize_answers(sub_answers: List[Dict[str, str]], original_question: str
     
     # Build a structured response
     parts = []
+    has_complete_answer = False
     
     for idx, sub_answer in enumerate(sub_answers, 1):
         answer_text = sub_answer.get("answer", "").strip()
+        question_type = sub_answer.get("type", "general")
         
-        # Skip empty or error answers
-        if not answer_text or "not available" in answer_text.lower():
+        # Skip truly empty answers
+        if not answer_text:
             continue
         
-        # For the first answer or if answers are short, just append
-        if idx == 1 or len(answer_text) < 100:
+        # Check if answer has useful content (not just "not available")
+        answer_lower = answer_text.lower()
+        is_empty_answer = (
+            answer_text == "not available" or 
+            answer_text == "Not available" or
+            answer_lower == "the information is not available in the provided documents."
+        )
+        
+        # If answer has content beyond "not available", include it
+        if not is_empty_answer:
+            has_complete_answer = True
             parts.append(answer_text)
-        else:
-            # For subsequent longer answers, add a subtle separator
+        elif len(sub_answers) == 1:
+            # If it's the only answer, include it even if empty
             parts.append(answer_text)
     
     if not parts:
         return "The requested information is not available in the provided documents."
     
     # Join with appropriate spacing
-    result = " ".join(parts)
+    # If we have multiple parts, add line breaks for readability
+    if len(parts) > 1:
+        result = "\n\n".join(parts)
+    else:
+        result = parts[0]
     
     return result
 
