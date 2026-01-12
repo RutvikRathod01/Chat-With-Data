@@ -1,7 +1,10 @@
+from typing import Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
-from typing import Optional
 
 from langchain_chroma import Chroma
+
+if TYPE_CHECKING:
+    from retrieval.ranking import SparseIndex
 
 
 @dataclass

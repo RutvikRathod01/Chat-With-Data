@@ -1,6 +1,11 @@
-import logging
+"""
+Handles document chunking and summarization for ingestion.
+Includes adaptive chunk sizing, section summarization, and metadata enrichment.
+"""
+
 import re
 import uuid
+import logging
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -88,7 +93,7 @@ def get_document_chunks(docs):
         splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         base_meta = dict(doc.metadata or {})
         source_prefix = base_meta.get("source") or f"chunk-{uuid.uuid4().hex[:8]}"
-        
+
         # Store parent document info for context
         parent_doc_name = base_meta.get("document_name") or base_meta.get("source")
         parent_doc_text = (doc.page_content or "").strip()
@@ -102,15 +107,15 @@ def get_document_chunks(docs):
             metadata["source_type"] = metadata.get("source_type", "chunk")
             metadata["parent_document"] = parent_doc_name
             metadata["parent_preview"] = parent_doc_preview  # Context from parent doc
-            
+
             # Enrich metadata with extracted entities for better filtering and counting
             chunk_text = chunk.page_content or ""
             metadata = enrich_chunk_metadata(chunk_text, metadata)
-            
+
             # Inject entity prefixes into chunk content for better retrieval
             enhanced_content = inject_entity_prefixes(chunk_text, metadata)
             chunk.page_content = enhanced_content
-            
+
             chunk.metadata = metadata
             chunked.append(chunk)
 

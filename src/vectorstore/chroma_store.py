@@ -1,12 +1,12 @@
-import logging
+"""Chroma vector store management for document embeddings."""
+
 import os
-import shutil
 import time
-from pathlib import Path
-
+import shutil
+import logging
 import chromadb
+from pathlib import Path
 from langchain_chroma import Chroma
-
 from config.settings import EMBEDDING_STORE_DIR, embedding_model
 
 _CHROMA_SETTINGS = None
@@ -32,7 +32,7 @@ def get_session_store_dir(file_group_name):
 
     # Just set the session directory without deleting previous ones
     session_dir = EMBEDDING_STORE_DIR / file_group_name
-    
+
     # Only create if it doesn't exist (reuse existing for same collection)
     if not session_dir.exists():
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ def reset_embedding_store(max_age_hours=168):  # 7 days default
                             time.sleep(0.1)
                             shutil.rmtree(item, ignore_errors=True)
                             cleaned_count += 1
-                            logging.info("Cleaned up old session directory (%.1f days old): %s", age/86400, item)
+                            logging.info("Cleaned up old session directory (%.1f days old): %s", age / 86400, item)
                     except Exception as exc:  # pylint: disable=broad-except
                         logging.warning("Error cleaning up directory %s: %s", item, str(exc))
             if cleaned_count > 0:
@@ -98,36 +98,36 @@ def get_all_chunks_by_metadata(vectorstore, metadata_filter=None, document_filte
     """
     Retrieve all chunks matching metadata filter without TopK limits.
     Used for exhaustive retrieval in counting/enumeration queries.
-    
+
     Args:
         vectorstore: Chroma vector store instance
         metadata_filter: Dict of metadata filters (e.g., {"contains_projects": True})
         document_filter: Specific document name to filter by (handled in post-processing)
-        
+
     Returns:
         List of documents with scores (score set to 1.0 for exhaustive retrieval)
     """
     from langchain_core.documents import Document
-    
+
     try:
         # Use metadata_filter only - document filtering done in post-processing
         filter_to_use = {}
         if metadata_filter:
             filter_to_use.update(metadata_filter)
-            
-        logging.info("Exhaustive retrieval with metadata_filter: %s, document_filter: %s", 
-                    metadata_filter, document_filter)
-        
+
+        logging.info("Exhaustive retrieval with metadata_filter: %s, document_filter: %s",
+                     metadata_filter, document_filter)
+
         # Get all matching documents without k limit
         if filter_to_use:
             results = vectorstore.get(where=filter_to_use)
         else:
             # No metadata filter - get all documents
             results = vectorstore.get()
-            
+
         # Convert to (Document, score) tuples
         docs_with_scores = []
-        
+
         if results and 'documents' in results:
             # Log available document names for debugging
             available_docs = set()
@@ -135,17 +135,17 @@ def get_all_chunks_by_metadata(vectorstore, metadata_filter=None, document_filte
                 metadata = results['metadatas'][i] if 'metadatas' in results else {}
                 doc_name = metadata.get('document_name', 'unknown')
                 available_docs.add(doc_name)
-                
+
                 doc = Document(page_content=doc_text, metadata=metadata)
                 docs_with_scores.append((doc, 1.0))
-            
-            logging.info("Exhaustive retrieval found %d chunks from documents: %s", 
-                        len(docs_with_scores), list(available_docs)[:10])
+
+            logging.info("Exhaustive retrieval found %d chunks from documents: %s",
+                         len(docs_with_scores), list(available_docs)[:10])
         else:
             logging.warning("Exhaustive retrieval got empty results from vectorstore.get()")
-                
+
         return docs_with_scores
-        
+
     except Exception as exc:
         logging.error("Error in exhaustive retrieval: %s", str(exc))
         # Fall back to empty list

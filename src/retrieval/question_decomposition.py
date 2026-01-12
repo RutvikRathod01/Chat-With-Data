@@ -6,6 +6,7 @@ be processed independently and then synthesized into a comprehensive answer.
 """
 
 import logging
+import re
 from typing import List, Dict, Optional, Any
 
 from config.settings import USE_GROQ, USE_GEMINI, GROQ_MODEL, GEMINI_MODEL
@@ -170,21 +171,10 @@ def analyze_query(question: str, available_documents: List[str] = None, chat_his
         return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
 
 
-def decompose_question(question: str, available_documents: List[str] = None, chat_history: List[Dict] = None) -> List[Dict[str, Any]]:
-    """Backward compatibility wrapper."""
-    return analyze_query(question, available_documents, chat_history)
-
-
-def detect_multi_intent_question(question: str) -> bool:
-    """Deprecated: Logic is now handled by analyze_query."""
-    return " and " in question.lower() or "?" in question.replace(question[-1], "")
-
-
 def extract_document_filter_from_question(question: str) -> Optional[str]:
     """
     Extract document name if the question explicitly mentions a document.
     """
-    import re
     question_lower = question.lower()
     
     # Common patterns for document references
@@ -244,9 +234,7 @@ def synthesize_answers(sub_answers: List[Dict[str, str]], original_question: str
     try:
         llm = get_llm()
         if not llm:
-            # Fallback: simple concatenation
-            logging.warning("No LLM for synthesis, using simple concatenation")
-            return "\n\n".join(sa["answer"] for sa in valid_answers)
+            raise RuntimeError("LLM is required for answer synthesis. Please configure USE_GROQ or USE_GEMINI.")
         
         # Build context for synthesis
         answers_text = ""
@@ -285,13 +273,10 @@ def synthesize_answers(sub_answers: List[Dict[str, str]], original_question: str
         
     except Exception as e:
         logging.error(f"Error in LLM-based synthesis: {e}")
-        # Fallback to simple concatenation
-        return "\n\n".join(sa["answer"] for sa in valid_answers)
+        raise RuntimeError(f"Answer synthesis failed: {e}") from e
 
 
 __all__ = [
-    "detect_multi_intent_question",
-    "decompose_question",
     "analyze_query",
     "extract_document_filter_from_question",
     "synthesize_answers",

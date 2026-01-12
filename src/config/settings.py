@@ -41,30 +41,6 @@ DENSE_SCORE_WEIGHT = 0.7
 SPARSE_SCORE_WEIGHT = 0.3
 MAX_MULTI_QUERIES = 5  # Increased from 3 for more comprehensive querying
 CONTEXT_TOKEN_BUDGET = 3500  # Increased from 2400 for multi-document context
-FOLLOW_UP_PRONOUNS = {
-    "it",
-    "this",
-    "that",
-    "those",
-    "these",
-    "they",
-    "them",
-    "their",
-    "theirs",
-    "he",
-    "she",
-    "him",
-    "her",
-    "his",
-    "hers",
-    "we",
-    "us",
-    "our",
-    "ours",
-    "you",
-    "your",
-    "yours",
-}
 CHAT_SNIPPET_MAX_CHARS = 160
 
 CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -102,7 +78,6 @@ __all__ = [
     "SPARSE_SCORE_WEIGHT",
     "MAX_MULTI_QUERIES",
     "CONTEXT_TOKEN_BUDGET",
-    "FOLLOW_UP_PRONOUNS",
     "CHAT_SNIPPET_MAX_CHARS",
     "CROSS_ENCODER_MODEL",
     "USE_GROQ",

@@ -2,13 +2,19 @@
 FastAPI REST API server for Chat with Documents RAG application.
 This server provides REST endpoints for the React frontend.
 """
+
 import os
+import sys
+import shutil
+import uvicorn
 import logging
+import tempfile
 from pathlib import Path
+from config.settings import DATA_DIR
 from typing import List, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -23,7 +29,6 @@ os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
 os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY")  # Gemini uses GOOGLE_API_KEY
 
 # Configure logging
-import sys
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -54,7 +59,6 @@ app.add_middleware(
 session_manager = get_session_manager()
 
 # Import DATA_DIR from config to ensure consistency
-from config.settings import DATA_DIR
 
 
 # Pydantic models for request/response
@@ -62,7 +66,7 @@ class ChatRequest(BaseModel):
     """Request model for chat endpoint."""
     session_id: str
     message: str
-    
+
 
 class ChatResponse(BaseModel):
     """Response model for chat endpoint."""
@@ -124,7 +128,7 @@ async def get_sessions():
     try:
         sessions = session_manager.get_all_sessions()
         result = []
-        
+
         for session_id, doc_name, last_updated in sessions:
             # Get message count
             messages = session_manager.load_chat_history(session_id)
@@ -134,7 +138,7 @@ async def get_sessions():
                 "last_updated": last_updated,
                 "message_count": len(messages)
             })
-        
+
         return result
     except Exception as e:
         logging.error(f"Error fetching sessions: {e}")
@@ -149,7 +153,7 @@ async def get_session_messages(session_id: str):
         rag_session = session_manager.get_session(session_id)
         if not rag_session:
             raise HTTPException(status_code=404, detail="Session not found or expired")
-        
+
         # Load chat history
         messages = session_manager.load_chat_history(session_id)
         return [
@@ -203,17 +207,14 @@ async def upload_documents(files: List[UploadFile] = File(...)):
     Upload and process documents to create a new session.
     Accepts PDF, DOCX, and XLSX files.
     """
-    import tempfile
-    import os
-    
     temp_dir = None
     try:
         if not files:
             raise HTTPException(status_code=400, detail="No files provided")
-        
+
         # Create a temporary directory for uploaded files
         temp_dir = tempfile.mkdtemp()
-        
+
         # Save uploaded files to temporary directory
         temp_files = []
         for file in files:
@@ -225,38 +226,38 @@ async def upload_documents(files: List[UploadFile] = File(...)):
                     status_code=400,
                     detail=f"Invalid file type: {file.filename}. Allowed: PDF, DOCX, XLSX"
                 )
-            
+
             # Save to temporary location
             temp_path = Path(temp_dir) / file.filename
             with open(temp_path, "wb") as f:
                 content = await file.read()
                 f.write(content)
-            
+
             # Create a file-like object with name attribute (compatible with Gradio interface)
             class FileObject:
                 def __init__(self, path):
                     self.name = str(path)
-            
+
             temp_files.append(FileObject(temp_path))
-        
+
         # Process documents using existing pipeline
         # This will save files properly to DATA_DIR with collection naming
         result = proceed_input(temp_files)
-        
+
         # Create session
         session_id = session_manager.create_session(
             result.rag_session,
             result.document_name,
             result.collection_name
         )
-        
+
         return {
             "session_id": session_id,
             "document_name": result.document_name,
             "collection_name": result.collection_name,
             "message": f"Documents processed successfully: {result.document_name}"
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -281,10 +282,10 @@ async def chat(request: ChatRequest):
     try:
         session_id = request.session_id
         message = request.message.strip()
-        
+
         if not message:
             raise HTTPException(status_code=400, detail="Message cannot be empty")
-        
+
         # Get RAG session
         rag_session = session_manager.get_session(session_id)
         if not rag_session:
@@ -292,20 +293,20 @@ async def chat(request: ChatRequest):
                 status_code=404,
                 detail="Session not found or expired. Please reprocess documents."
             )
-        
+
         # Save user message
         session_manager.save_message(session_id, "user", message)
-        
+
         # Load chat history for context
         chat_history = session_manager.load_chat_history(session_id)
         history_for_context = [
             {"role": msg["role"], "content": msg["content"]}
             for msg in chat_history
         ]
-        
+
         # Get response from RAG
         response_data = process_user_question(message, rag_session, history_for_context)
-        
+
         # Handle response (can be dict or string)
         if isinstance(response_data, dict):
             answer = response_data.get("answer", "")
@@ -313,17 +314,17 @@ async def chat(request: ChatRequest):
         else:
             answer = str(response_data)
             sources = []
-        
+
         # Save assistant response
         session_manager.save_message(session_id, "assistant", answer)
-        
+
         return {
             "role": "assistant",
             "content": answer,
             "sources": sources,
             "timestamp": datetime.now().isoformat()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -338,14 +339,14 @@ async def get_session_info(session_id: str):
         session_info = session_manager.get_session_info(session_id)
         if not session_info:
             raise HTTPException(status_code=404, detail="Session not found")
-        
+
         # Check if session is loaded in memory
         rag_session = session_manager.get_session(session_id)
         is_active = rag_session is not None
-        
+
         # Get message count
         messages = session_manager.load_chat_history(session_id)
-        
+
         return {
             "session_id": session_id,
             "document_name": session_info["document_name"],
@@ -370,9 +371,6 @@ async def add_documents_to_session(session_id: str, files: List[UploadFile] = Fi
     Add new documents to an existing chat session.
     This allows users to continue their conversation with additional documents.
     """
-    import tempfile
-    import shutil
-    
     temp_dir = None
     try:
         # Validate session exists
@@ -382,17 +380,17 @@ async def add_documents_to_session(session_id: str, files: List[UploadFile] = Fi
                 status_code=404,
                 detail="Session not found or expired. Please create a new session."
             )
-        
+
         if not files:
             raise HTTPException(status_code=400, detail="No files provided")
-        
+
         # Create temporary directory for uploaded files
         temp_dir = tempfile.mkdtemp()
-        
+
         # Save uploaded files to temporary directory
         temp_files = []
         original_filenames = []
-        
+
         for file in files:
             # Validate file type
             allowed_extensions = [".pdf", ".docx", ".xlsx"]
@@ -402,43 +400,43 @@ async def add_documents_to_session(session_id: str, files: List[UploadFile] = Fi
                     status_code=400,
                     detail=f"Invalid file type: {file.filename}. Allowed: PDF, DOCX, XLSX"
                 )
-            
+
             # Save to temporary location
             temp_path = Path(temp_dir) / file.filename
             with open(temp_path, "wb") as f:
                 content = await file.read()
                 f.write(content)
-            
+
             temp_files.append(temp_path)
             original_filenames.append(file.filename)
-        
+
         # Process and add documents to existing session
         result = add_documents_to_existing_session(
             uploaded_files=temp_files,
             session_id=session_id,
             session_manager=session_manager
         )
-        
+
         if not result["success"]:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to add documents: {result.get('message', 'Unknown error')}"
             )
-        
+
         # Add system message to chat history indicating documents were added
         documents_list = ", ".join(result["filenames"])
         system_message = f"Added {len(result['filenames'])} document(s) to conversation: {documents_list}"
         session_manager.save_message(session_id, "system", system_message)
-        
+
         logging.info(f"Successfully added documents to session {session_id}: {documents_list}")
-        
+
         return {
             "message": result["message"],
             "session_id": session_id,
             "filenames": result["filenames"],
             "count": len(result["filenames"])
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -480,7 +478,6 @@ async def general_exception_handler(request, exc):
 
 # Run server
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(
         "api_server:app",
         host="0.0.0.0",

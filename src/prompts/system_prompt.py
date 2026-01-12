@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from config.settings import SYSTEM_PROMPT_DIR
 
 

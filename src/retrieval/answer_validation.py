@@ -6,9 +6,7 @@ and warns users appropriately to avoid overconfident wrong answers.
 """
 
 import logging
-import re
-from typing import List, Dict, Optional
-
+from typing import List, Dict
 from config.settings import USE_GROQ, USE_GEMINI, GROQ_MODEL, GEMINI_MODEL
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -25,65 +23,35 @@ def get_llm():
     return None
 
 
-def is_counting_question(question: str) -> bool:
-    """
-    DEPRECATED: Use validate_answer_with_llm() instead.
-    
-    Legacy regex-based detection kept for backward compatibility only.
-    New code should use LLM-based validation which understands paraphrases.
-    """
-    question_lower = question.lower()
-    
-    # Generic patterns that work across all domains
-    counting_patterns = [
-        r'\bhow many\b',
-        r'\bcount\b',
-        r'\bnumber of\b',
-        r'\bhow much\b',
-        r'\blist all\b',
-        r'\bwhat are all\b',
-        r'\benumerate\b',
-        r'\btotal\b',
-        r'\ball\b.*\b(the|of)\b',  # "all the" or "all of" patterns
-    ]
-    
-    for pattern in counting_patterns:
-        if re.search(pattern, question_lower):
-            return True
-    
-    return False
-
-
 def validate_answer_with_llm(
-    question: str, 
-    answer: str, 
-    context_entries: List[Dict], 
+    question: str,
+    answer: str,
+    context_entries: List[Dict],
     retrieval_mode: str = "semantic"
 ) -> Dict:
     """
     Use LLM to dynamically validate answer quality and completeness.
-    
+
     This replaces static heuristics with intelligent analysis that:
     - Understands paraphrased questions
     - Detects semantic incompleteness
     - Adapts to different document types
     - Provides reasoning for debugging
-    
+
     Args:
         question: User's original question
         answer: Generated answer text
         context_entries: Retrieved context chunks
         retrieval_mode: 'semantic' or 'exhaustive'
-        
+
     Returns:
         Dictionary with validation results and suggested warnings
     """
     try:
         llm = get_llm()
         if not llm:
-            logging.warning("No LLM available for answer validation, falling back to heuristic")
-            return validate_context_completeness(question, context_entries, answer, retrieval_mode)
-        
+            raise RuntimeError("LLM is required for answer validation. Please configure USE_GROQ or USE_GEMINI.")
+
         # Extract document information
         documents_seen = set()
         for entry in context_entries:
@@ -92,20 +60,20 @@ def validate_answer_with_llm(
                 doc_name = doc.metadata.get("document_name")
                 if doc_name:
                     documents_seen.add(doc_name)
-        
+
         num_documents = len(documents_seen)
         num_chunks = len(context_entries)
         doc_list = list(documents_seen) if documents_seen else ["unknown"]
-        
+
         # Get a sample of context to help LLM understand what was retrieved
         context_sample = ""
         if context_entries:
             sample_chunks = context_entries[:3]  # First 3 chunks
             context_sample = "\n".join([
-                f"- {entry['doc'].page_content[:150]}..." 
+                f"- {entry['doc'].page_content[:150]}..."
                 for entry in sample_chunks if entry.get('doc')
             ])
-        
+
         prompt = ChatPromptTemplate.from_template(
             """You are an answer quality validator for a RAG (Retrieval-Augmented Generation) system.
 
@@ -147,7 +115,7 @@ Output JSON (no markdown):
     "num_documents": {num_documents}
 }}"""
         )
-        
+
         chain = prompt | llm | JsonOutputParser()
         result = chain.invoke({
             "question": question,
@@ -158,7 +126,7 @@ Output JSON (no markdown):
             "retrieval_mode": retrieval_mode,
             "context_sample": context_sample or "No context retrieved"
         })
-        
+
         # Ensure backward compatibility with expected fields
         validation_result = {
             "is_complete": result.get("is_complete", True),
@@ -169,145 +137,40 @@ Output JSON (no markdown):
             "num_chunks": num_chunks,
             "num_documents": num_documents
         }
-        
-        logging.info("LLM validation: is_complete=%s, confidence=%s, reasoning=%s", 
-                    validation_result["is_complete"], 
-                    validation_result["confidence"],
-                    validation_result["reasoning"][:100])
-        
+
+        logging.info("LLM validation: is_complete=%s, confidence=%s, reasoning=%s",
+                     validation_result["is_complete"],
+                     validation_result["confidence"],
+                     validation_result["reasoning"][:100])
+
         return validation_result
-        
+
     except Exception as e:
-        logging.error(f"LLM answer validation failed: {e}. Falling back to heuristic validation.")
-        return validate_context_completeness(question, context_entries, answer, retrieval_mode)
-
-
-def validate_context_completeness(question: str, context_entries: List[Dict], answer: str, retrieval_mode: str = "semantic") -> Dict:
-    """
-    LEGACY: Heuristic-based validation (fallback only).
-    
-    Use validate_answer_with_llm() for production - it's more accurate.
-    This function is kept as a fallback when LLM is unavailable.
-    
-    Args:
-        question: User's question
-        context_entries: Retrieved context chunks
-        answer: Generated answer text
-        retrieval_mode: 'semantic' or 'exhaustive' - affects validation threshold
-        
-    Returns:
-        Dictionary with:
-        - is_complete: bool indicating if context seems complete
-        - warning: Optional warning message to append
-        - confidence: "high", "medium", or "low"
-    """
-    if not is_counting_question(question):
-        # For non-counting questions, assume context is adequate
-        return {
-            "is_complete": True,
-            "warning": None,
-            "confidence": "high"
-        }
-    
-    # For counting questions, analyze context coverage
-    if not context_entries:
-        return {
-            "is_complete": False,
-            "warning": "⚠️ No relevant context was found. This answer may be incomplete.",
-            "confidence": "low"
-        }
-    
-    # Check document distribution
-    documents_seen = set()
-    for entry in context_entries:
-        doc = entry.get("doc")
-        if doc and doc.metadata:
-            doc_name = doc.metadata.get("document_name")
-            if doc_name:
-                documents_seen.add(doc_name)
-    
-    num_documents = len(documents_seen)
-    num_chunks = len(context_entries)
-    
-    logging.info("Context validation: %d chunks from %d documents", num_chunks, num_documents)
-    
-    # Heuristics for completeness
-    confidence = "high"
-    warning = None
-    is_complete = True
-    
-    # Check 1: Limited context chunks (adaptive threshold)
-    # Use lower threshold for exhaustive mode since it retrieves all matching chunks
-    threshold = 2 if retrieval_mode == "exhaustive" else 3
-    
-    if num_chunks < threshold:
-        confidence = "medium"
-        warning = "Note: Retrieved context is limited. If you expected more results, try rephrasing your question."
-        is_complete = False
-    
-    # Check 2: Answer indicates uncertainty
-    answer_lower = answer.lower()
-    uncertainty_indicators = [
-        "may not be complete",
-        "might be",
-        "appears to be",
-        "seems to be",
-        "not sure",
-        "unclear",
-        "may be missing",
-    ]
-    
-    if any(indicator in answer_lower for indicator in uncertainty_indicators):
-        confidence = "medium"
-        if not warning:
-            warning = "Note: The answer indicates some uncertainty. Consider refining your question."
-    
-    # Check 3: For multi-document queries, ensure we got context from multiple docs
-    question_lower = question.lower()
-    mentions_multiple = any(word in question_lower for word in ["both", "all", "multiple", "each", "every"])
-    
-    if mentions_multiple and num_documents < 2:
-        confidence = "low"
-        warning = "⚠️ Question asks about multiple documents, but context was retrieved from only one. Answer may be incomplete."
-        is_complete = False
-    
-    # Check 4: Check if answer says "not available" but we have context
-    if "not available" in answer_lower and num_chunks > 0:
-        # This might be a false negative - context was found but didn't contain the answer
-        confidence = "medium"
-    
-    return {
-        "is_complete": is_complete,
-        "warning": warning,
-        "confidence": confidence,
-        "num_chunks": num_chunks,
-        "num_documents": num_documents
-    }
+        logging.error(f"LLM answer validation failed: {e}")
+        raise RuntimeError(f"Answer validation failed: {e}") from e
 
 
 def append_validation_warning(answer: str, validation_result: Dict) -> str:
     """
     Append validation warning to answer if needed.
-    
+
     Args:
         answer: Original answer text
-        validation_result: Result from validate_context_completeness
-        
+        validation_result: Result from validate_answer_with_llm
+
     Returns:
         Answer with optional warning appended
     """
     warning = validation_result.get("warning")
-    
+
     if warning:
         # Add a line break before the warning
         return f"{answer}\n\n{warning}"
-    
+
     return answer
 
 
 __all__ = [
-    "is_counting_question",
-    "validate_context_completeness",
     "validate_answer_with_llm",
     "append_validation_warning",
 ]

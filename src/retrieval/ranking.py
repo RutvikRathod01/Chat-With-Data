@@ -1,3 +1,9 @@
+"""
+Handles ranking and reranking of document chunks for retrieval.
+Includes sparse indexing, dense retrieval, cross-encoder reranking,
+and context assembly with multi-document coverage.
+"""
+
 import logging
 from difflib import SequenceMatcher
 from typing import List

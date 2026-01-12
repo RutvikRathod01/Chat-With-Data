@@ -6,7 +6,7 @@ import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 
 class ChatStorage:
@@ -17,7 +17,7 @@ class ChatStorage:
         if db_path is None:
             project_root = Path(__file__).resolve().parent.parent.parent
             db_path = project_root / "src" / "logs" / "chat_history.db"
-        
+
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_database()
@@ -27,7 +27,7 @@ class ChatStorage:
         """Create database tables if they don't exist."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            
+
             # Sessions table with documents column for multi-doc tracking
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -41,21 +41,21 @@ class ChatStorage:
                     is_active INTEGER DEFAULT 1
                 )
             """)
-            
+
             # Add documents column if it doesn't exist (for existing databases)
             try:
                 cursor.execute("ALTER TABLE sessions ADD COLUMN documents TEXT DEFAULT '[]'")
                 logging.info("Added documents column to sessions table")
             except sqlite3.OperationalError:
                 pass  # Column already exists
-            
+
             # Add document_batches column if it doesn't exist
             try:
                 cursor.execute("ALTER TABLE sessions ADD COLUMN document_batches TEXT DEFAULT '[]'")
                 logging.info("Added document_batches column to sessions table")
             except sqlite3.OperationalError:
                 pass  # Column already exists
-            
+
             # Messages table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
@@ -67,25 +67,25 @@ class ChatStorage:
                     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
                 )
             """)
-            
+
             # Index for faster queries
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_session_messages 
                 ON messages(session_id, timestamp)
             """)
-            
+
             conn.commit()
             logging.info("Database initialized successfully")
 
     def create_session(
-        self, 
-        session_id: str, 
-        document_name: str, 
+        self,
+        session_id: str,
+        document_name: str,
         collection_name: str,
         documents: List[str] = None
     ) -> bool:
         """Create a new chat session with document tracking.
-        
+
         Args:
             session_id: Unique session identifier
             document_name: Display name for the session
@@ -102,7 +102,7 @@ class ChatStorage:
                 """, (session_id, document_name, collection_name, documents_json))
                 conn.commit()
                 logging.info(
-                    "Created session: %s for document: %s with %d documents", 
+                    "Created session: %s for document: %s with %d documents",
                     session_id, document_name, len(documents or [])
                 )
                 return True
@@ -123,7 +123,7 @@ class ChatStorage:
                     FROM sessions
                     WHERE session_id = ? AND is_active = 1
                 """, (session_id,))
-                
+
                 row = cursor.fetchone()
                 if row:
                     # Parse documents JSON
@@ -131,13 +131,13 @@ class ChatStorage:
                         documents = json.loads(row[3]) if row[3] else []
                     except (json.JSONDecodeError, TypeError):
                         documents = []
-                    
+
                     # Parse document_batches JSON
                     try:
                         document_batches = json.loads(row[4]) if row[4] else []
                     except (json.JSONDecodeError, TypeError):
                         document_batches = []
-                    
+
                     return {
                         "session_id": row[0],
                         "document_name": row[1],
@@ -163,7 +163,7 @@ class ChatStorage:
                     WHERE is_active = 1
                     ORDER BY last_updated DESC
                 """)
-                
+
                 sessions = []
                 for row in cursor.fetchall():
                     sessions.append({
@@ -183,20 +183,20 @@ class ChatStorage:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
+
                 # Add message
                 cursor.execute("""
                     INSERT INTO messages (session_id, role, content)
                     VALUES (?, ?, ?)
                 """, (session_id, role, content))
-                
+
                 # Update session's last_updated timestamp
                 cursor.execute("""
                     UPDATE sessions
                     SET last_updated = CURRENT_TIMESTAMP
                     WHERE session_id = ?
                 """, (session_id,))
-                
+
                 conn.commit()
                 return True
         except Exception as e:
@@ -208,19 +208,19 @@ class ChatStorage:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
+
                 query = """
                     SELECT role, content, timestamp
                     FROM messages
                     WHERE session_id = ?
                     ORDER BY timestamp ASC
                 """
-                
+
                 if limit:
                     query += f" LIMIT {limit}"
-                
+
                 cursor.execute(query, (session_id,))
-                
+
                 messages = []
                 for row in cursor.fetchall():
                     messages.append({
@@ -281,33 +281,33 @@ class ChatStorage:
         except Exception as e:
             logging.error("Error updating session timestamp: %s", e)
             return False
-    
+
     def append_documents_to_session(self, session_id: str, new_documents: List[str]) -> bool:
         """Append new documents to an existing session.
-        
+
         Args:
             session_id: Session to update
             new_documents: List of new document filenames to add
-            
+
         Returns:
             True if successful, False otherwise
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
+
                 # Get current documents and batches
                 cursor.execute("""
                     SELECT documents, document_batches
                     FROM sessions
                     WHERE session_id = ? AND is_active = 1
                 """, (session_id,))
-                
+
                 row = cursor.fetchone()
                 if not row:
                     logging.error("Session %s not found", session_id)
                     return False
-                
+
                 # Parse existing documents
                 try:
                     current_docs = json.loads(row[0]) if row[0] else []
@@ -315,17 +315,17 @@ class ChatStorage:
                 except (json.JSONDecodeError, TypeError):
                     current_docs = []
                     current_batches = []
-                
+
                 # Create new batch entry
                 new_batch = {
                     "documents": new_documents,
                     "added_at": datetime.now().isoformat()
                 }
-                
+
                 # Update lists
                 updated_docs = current_docs + new_documents
                 updated_batches = current_batches + [new_batch]
-                
+
                 # Update database
                 cursor.execute("""
                     UPDATE sessions
@@ -334,44 +334,44 @@ class ChatStorage:
                         last_updated = CURRENT_TIMESTAMP
                     WHERE session_id = ?
                 """, (json.dumps(updated_docs), json.dumps(updated_batches), session_id))
-                
+
                 conn.commit()
                 logging.info(
                     "Appended %d documents to session %s (total: %d)",
                     len(new_documents), session_id, len(updated_docs)
                 )
                 return True
-                
+
         except Exception as e:
             logging.error("Error appending documents to session: %s", e)
             return False
-    
+
     def append_documents_to_session(self, session_id: str, new_documents: List[str]) -> bool:
         """Append new documents to an existing session.
-        
+
         Args:
             session_id: Session to update
             new_documents: List of new document filenames to add
-            
+
         Returns:
             True if successful, False otherwise
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
+
                 # Get current documents and batches
                 cursor.execute("""
                     SELECT documents, document_batches
                     FROM sessions
                     WHERE session_id = ? AND is_active = 1
                 """, (session_id,))
-                
+
                 row = cursor.fetchone()
                 if not row:
                     logging.error("Session %s not found", session_id)
                     return False
-                
+
                 # Parse existing documents
                 try:
                     current_docs = json.loads(row[0]) if row[0] else []
@@ -379,17 +379,17 @@ class ChatStorage:
                 except (json.JSONDecodeError, TypeError):
                     current_docs = []
                     current_batches = []
-                
+
                 # Create new batch entry
                 new_batch = {
                     "documents": new_documents,
                     "added_at": datetime.now().isoformat()
                 }
-                
+
                 # Update lists
                 updated_docs = current_docs + new_documents
                 updated_batches = current_batches + [new_batch]
-                
+
                 # Update database
                 cursor.execute("""
                     UPDATE sessions
@@ -398,14 +398,14 @@ class ChatStorage:
                         last_updated = CURRENT_TIMESTAMP
                     WHERE session_id = ?
                 """, (json.dumps(updated_docs), json.dumps(updated_batches), session_id))
-                
+
                 conn.commit()
                 logging.info(
                     "Appended %d documents to session %s (total: %d)",
                     len(new_documents), session_id, len(updated_docs)
                 )
                 return True
-                
+
         except Exception as e:
             logging.error("Error appending documents to session: %s", e)
             return False

@@ -3,11 +3,22 @@ Session manager for handling multiple document chat sessions.
 """
 import logging
 import uuid
+import shutil
+import glob
+import chromadb
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from langchain_chroma import Chroma
+from langchain_core.documents import Document
+
+from config.settings import EMBEDDING_STORE_DIR, DATA_DIR, embedding_model
 from models.chat_storage import get_chat_storage
 from models.session import RagSession
+from prompts.system_prompt import read_system_prompt
+from rag.pipeline import build_rag_chain
+from retrieval.ranking import SparseIndex
+from vectorstore.chroma_store import get_chroma_settings
 
 
 class SessionManager:
@@ -20,35 +31,35 @@ class SessionManager:
         logging.info("SessionManager initialized")
 
     def create_session(
-        self, 
-        rag_session: RagSession, 
+        self,
+        rag_session: RagSession,
         document_name: str,
         collection_name: str
     ) -> str:
         """
         Create a new session for a document.
-        
+
         Args:
             rag_session: RAG session object
             document_name: Name of the document(s)
             collection_name: Vector store collection name
-            
+
         Returns:
             session_id: Unique identifier for the session
         """
         session_id = str(uuid.uuid4())
-        
+
         # Update RAG session with metadata
         rag_session.session_id = session_id
         rag_session.document_name = document_name
         rag_session.collection_name = collection_name
-        
+
         # Store in memory
         self.active_sessions[session_id] = rag_session
-        
+
         # Persist to database
         self.storage.create_session(session_id, document_name, collection_name)
-        
+
         logging.info("Created session %s for document: %s", session_id, document_name)
         return session_id
 
@@ -57,7 +68,7 @@ class SessionManager:
         # Check if already in memory
         if session_id in self.active_sessions:
             return self.active_sessions[session_id]
-        
+
         # Try to restore from disk
         session_info = self.storage.get_session(session_id)
         if session_info:
@@ -69,65 +80,56 @@ class SessionManager:
                     return restored_session
             except Exception as e:
                 logging.warning("Could not restore session %s: %s", session_id, e)
-        
+
         return None
 
     def _restore_session(self, session_info: dict) -> Optional[RagSession]:
         """
         Attempt to restore a RAG session from its persisted vector store.
-        
+
         Args:
             session_info: Session metadata from database
-            
+
         Returns:
             RagSession if successful, None otherwise
         """
         try:
-            from config.settings import EMBEDDING_STORE_DIR, embedding_model
-            from vectorstore.chroma_store import get_chroma_settings
-            from retrieval.ranking import SparseIndex
-            from rag.pipeline import build_rag_chain
-            from prompts.system_prompt import read_system_prompt
-            import chromadb
-            from langchain_chroma import Chroma
-            
             collection_name = session_info['collection_name']
             session_dir = EMBEDDING_STORE_DIR / collection_name
-            
+
             # Check if vector store directory exists
             if not session_dir.exists():
                 logging.warning("Vector store directory not found: %s", session_dir)
                 return None
-            
+
             # Restore vector store
             client = chromadb.PersistentClient(
                 path=str(session_dir),
                 settings=get_chroma_settings(),
             )
-            
+
             vectorstore = Chroma(
                 client=client,
                 collection_name=collection_name,
                 embedding_function=embedding_model,
             )
-            
+
             # Restore sparse index from vector store documents
             docs = vectorstore.get()
             if not docs or not docs.get('documents'):
                 logging.warning("No documents found in vector store for session %s", session_info['session_id'])
                 return None
-            
+
             # Recreate documents for sparse index
-            from langchain_core.documents import Document
             restored_docs = [
                 Document(page_content=content, metadata=metadata if metadata else {})
                 for content, metadata in zip(docs['documents'], docs['metadatas'])
             ]
-            
+
             sparse_index = SparseIndex(restored_docs)
             system_prompt = read_system_prompt("custom.yaml")
             rag_chain = build_rag_chain(system_prompt)
-            
+
             # Create restored session
             restored_session = RagSession(
                 rag_chain=rag_chain,
@@ -137,10 +139,10 @@ class SessionManager:
                 document_name=session_info['document_name'],
                 collection_name=collection_name
             )
-            
+
             logging.info("Successfully restored session: %s", session_info['document_name'])
             return restored_session
-            
+
         except Exception as e:
             logging.error("Error restoring session: %s", e, exc_info=True)
             return None
@@ -152,7 +154,7 @@ class SessionManager:
     def get_all_sessions(self) -> List[Tuple[str, str, str]]:
         """
         Get all active sessions.
-        
+
         Returns:
             List of tuples: (session_id, document_name, last_updated)
         """
@@ -180,19 +182,15 @@ class SessionManager:
         try:
             # Get session info to find the collection name
             session_info = self.storage.get_session(session_id)
-            
+
             # Remove from active sessions
             if session_id in self.active_sessions:
                 del self.active_sessions[session_id]
-            
+
             # Delete embedding store directory and uploaded files
             if session_info and session_info.get('collection_name'):
-                from config.settings import EMBEDDING_STORE_DIR, DATA_DIR
-                import shutil
-                import glob
-                
                 collection_name = session_info['collection_name']
-                
+
                 # Delete embedding store directory
                 store_dir = EMBEDDING_STORE_DIR / collection_name
                 if store_dir.exists():
@@ -201,7 +199,7 @@ class SessionManager:
                         logging.info("Deleted embedding store for session %s at %s", session_id, store_dir)
                     except Exception as e:
                         logging.warning("Could not delete embedding store at %s: %s", store_dir, e)
-                
+
                 # Delete uploaded document files from DATA_DIR
                 # Files are named as: {collection_name}-{idx}.{ext}
                 try:
@@ -212,20 +210,20 @@ class SessionManager:
                             logging.info("Deleted uploaded file: %s", file_path)
                         except Exception as e:
                             logging.warning("Could not delete file %s: %s", file_path, e)
-                    
+
                     if data_files:
                         logging.info("Deleted %d uploaded file(s) for session %s", len(data_files), session_id)
                 except Exception as e:
                     logging.warning("Error deleting uploaded files for session %s: %s", session_id, e)
-            
+
             # Mark as inactive in database
             success = self.storage.delete_session(session_id)
-            
+
             if success:
                 logging.info("Successfully deleted session %s", session_id)
-            
+
             return success
-            
+
         except Exception as e:
             logging.error("Error deleting session %s: %s", session_id, e)
             return False
@@ -233,7 +231,7 @@ class SessionManager:
     def get_session_info(self, session_id: str) -> Optional[dict]:
         """Get session information from storage."""
         return self.storage.get_session(session_id)
-    
+
     def add_documents_to_session(
         self,
         session_id: str,
@@ -241,12 +239,12 @@ class SessionManager:
         new_original_filenames: List[str]
     ) -> bool:
         """Add new documents to an existing session.
-        
+
         Args:
             session_id: ID of the session to update
             new_docs: List of processed document chunks to add
             new_original_filenames: List of original filenames being added
-            
+
         Returns:
             True if successful, False otherwise
         """
@@ -256,35 +254,33 @@ class SessionManager:
             if not rag_session:
                 logging.error("Session %s not found", session_id)
                 return False
-            
+
             # Add documents to existing vector store
             logging.info("Adding %d new chunks to session %s", len(new_docs), session_id)
             rag_session.vectorstore.add_documents(new_docs)
-            
+
             # Rebuild sparse index with combined documents
             existing_docs = rag_session.vectorstore.get()
             if existing_docs and existing_docs.get('documents'):
-                from langchain_core.documents import Document
                 all_docs = [
                     Document(page_content=content, metadata=metadata if metadata else {})
                     for content, metadata in zip(existing_docs['documents'], existing_docs['metadatas'])
                 ]
                 # Recreate sparse index with all documents
-                from retrieval.ranking import SparseIndex
                 rag_session.sparse_index = SparseIndex(all_docs)
                 logging.info("Rebuilt sparse index with %d total documents", len(all_docs))
-            
+
             # Update database to track new documents
             success = self.storage.append_documents_to_session(session_id, new_original_filenames)
-            
+
             if success:
                 logging.info(
                     "Successfully added %d documents to session %s",
                     len(new_original_filenames), session_id
                 )
-            
+
             return success
-            
+
         except Exception as e:
             logging.error("Error adding documents to session %s: %s", session_id, e, exc_info=True)
             return False

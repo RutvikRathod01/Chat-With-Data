@@ -1,4 +1,13 @@
+"""
+Builds the RAG pipeline with configurable LLM providers (Groq, Gemini).
+Handles document processing, retrieval strategies, and user query processing.
+"""
+
+
 import logging
+import tempfile
+import shutil
+from pathlib import Path
 
 import gradio as gr
 from langchain_core.output_parsers import StrOutputParser
@@ -7,7 +16,6 @@ from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from config.settings import (
-    DENSE_CANDIDATE_K,
     USE_GROQ,
     USE_GEMINI,
     GROQ_MODEL,
@@ -20,14 +28,12 @@ from models.session import RagSession, PipelineResult
 from prompts.system_prompt import read_system_prompt
 from retrieval.query_rewrite import generate_query_variations, rewrite_query
 from retrieval.question_decomposition import (
-    decompose_question,
-    detect_multi_intent_question,
+    analyze_query,
     extract_document_filter_from_question,
     synthesize_answers,
 )
 from retrieval.answer_validation import (
     validate_answer_with_llm,
-    validate_context_completeness,
     append_validation_warning,
 )
 from retrieval.ranking import (
@@ -39,8 +45,7 @@ from retrieval.ranking import (
     rerank_with_cross_encoder,
     extract_source_documents,
 )
-from vectorstore.chroma_store import get_vector_store, reset_embedding_store, get_all_chunks_by_metadata
-from retrieval.answer_validation import is_counting_question
+from vectorstore.chroma_store import get_vector_store, get_all_chunks_by_metadata
 
 
 def determine_retrieval_strategy(question: str, strategy_hint: str = None, metadata_filters: dict = None):
@@ -50,13 +55,13 @@ def determine_retrieval_strategy(question: str, strategy_hint: str = None, metad
     """
     # Trust the LLM analysis completely
     mode = strategy_hint or 'semantic'
-    
+
     if mode == 'exhaustive':
         logging.info("Retrieval strategy: EXHAUSTIVE (LLM determined)")
-        
+
         # Use filters provided by LLM analysis
         final_filters = metadata_filters or {}
-        
+
         return {
             'mode': 'exhaustive',
             'k': None,
@@ -65,7 +70,7 @@ def determine_retrieval_strategy(question: str, strategy_hint: str = None, metad
     else:
         # Semantic Mode - use standard k value
         k_value = 50
-             
+
         logging.info("Retrieval strategy: SEMANTIC (k=%d)", k_value)
         return {
             'mode': 'semantic',
@@ -97,24 +102,24 @@ def format_chat_history(chat_history, limit=6):
 def build_rag_chain(system_prompt, use_groq=None, use_gemini=None):
     """
     Build RAG chain with configurable LLM provider.
-    
+
     Args:
         system_prompt: System prompt for the LLM
         use_groq: Boolean to enable Groq (defaults to USE_GROQ from settings)
         use_gemini: Boolean to enable Gemini (defaults to USE_GEMINI from settings)
-    
+
     Returns:
         RAG chain with selected LLM
     """
     logging.info("Building modern RAG pipeline")
-    
+
     # Use provided parameters or fall back to environment settings
     use_groq_flag = use_groq if use_groq is not None else USE_GROQ
     use_gemini_flag = use_gemini if use_gemini is not None else USE_GEMINI
-    
+
     # Determine which LLM to use (priority: Gemini > Groq)
     llm = None
-    
+
     if use_gemini_flag:
         try:
             logging.info(f"Initializing Gemini LLM with model: {GEMINI_MODEL}")
@@ -128,7 +133,7 @@ def build_rag_chain(system_prompt, use_groq=None, use_gemini=None):
             logging.error(f"❌ Failed to initialize Gemini: {e}")
             if not use_groq_flag:
                 raise gr.Error(f"Failed to initialize Gemini and Groq is disabled: {e}")
-    
+
     if llm is None and use_groq_flag:
         try:
             logging.info(f"Initializing Groq LLM with model: {GROQ_MODEL}")
@@ -137,7 +142,7 @@ def build_rag_chain(system_prompt, use_groq=None, use_gemini=None):
         except Exception as e:
             logging.error(f"❌ Failed to initialize Groq: {e}")
             raise gr.Error(f"Failed to initialize Groq LLM: {e}")
-    
+
     if llm is None:
         error_msg = "No LLM provider enabled. Please set USE_GROQ=true or USE_GEMINI=true in .env"
         logging.error(error_msg)
@@ -160,7 +165,7 @@ def build_rag_chain(system_prompt, use_groq=None, use_gemini=None):
 def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None, document_filter=None, strategy_hint=None, metadata_filters=None, question_type="general"):
     """
     Retrieves the most relevant chunks based on query type and adaptive strategy.
-    
+
     Args:
         user_input: The user's query
         session: RAG session with vector store and sparse index
@@ -169,30 +174,30 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
         strategy_hint: Suggested retrieval strategy (exhaustive/semantic)
         metadata_filters: Additional metadata filters
         question_type: Type of question (count/list/timeline/general)
-    
+
     Returns:
         Tuple of (context_entries, resolved_query) where resolved_query is the
         context-resolved version of user_input (for semantic mode) or user_input itself
     """
     print(f"--- DEBUG: START RETRIEVAL ---", flush=True)
     print(f"Query: '{user_input}'", flush=True)
-    
+
     # Step 0: Determine retrieval strategy
     strategy = determine_retrieval_strategy(user_input, strategy_hint, metadata_filters)
-    
+
     if strategy['mode'] == 'exhaustive':
         # EXHAUSTIVE MODE: Retrieve all matching chunks without TopK limit
         print("--- DEBUG: RETRIEVAL STRATEGY: EXHAUSTIVE ---", flush=True)
         print("Optimization: Skipping query rewrite for comprehensive search.", flush=True)
         logging.info("Using EXHAUSTIVE retrieval mode for counting/enumeration query")
         logging.info("Document filter: %s, Metadata filter: %s", document_filter, strategy['metadata_filter'])
-        
+
         exhaustive_results = get_all_chunks_by_metadata(
             session.vectorstore,
             metadata_filter=strategy['metadata_filter'],
             document_filter=document_filter
         )
-        
+
         # Convert to candidate format
         candidates = []
         for doc, score in exhaustive_results:
@@ -201,27 +206,27 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
                 "score": score,
                 "source": "exhaustive"
             })
-            
+
         logging.info("Exhaustive retrieval: %d candidates", len(candidates))
-        
+
         # Apply document filter in post-processing (more reliable than ChromaDB filtering)
         if document_filter:
             # Collect all unique document names for debugging
             all_doc_names = set(c["doc"].metadata.get("document_name", "") for c in candidates)
             logging.info("Available documents before filtering: %s", list(all_doc_names))
-            
+
             filtered = []
             doc_filter_lower = document_filter.lower()
             # Remove file extension and common separators for flexible matching
             doc_filter_base = doc_filter_lower.replace('.pdf', '').replace('.docx', '').replace('.xlsx', '')
             doc_filter_base = doc_filter_base.replace('_', ' ').replace('-', ' ')
-            
+
             for candidate in candidates:
                 doc_name = candidate["doc"].metadata.get("document_name", "")
                 doc_name_lower = doc_name.lower()
                 doc_name_base = doc_name_lower.replace('.pdf', '').replace('.docx', '').replace('.xlsx', '')
                 doc_name_base = doc_name_base.replace('_', ' ').replace('-', ' ')
-                
+
                 # Multiple matching strategies
                 matched = False
                 if doc_filter_lower == doc_name_lower:
@@ -236,45 +241,45 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
                     doc_filter_base in doc_name_base or doc_name_base in doc_filter_base
                 ):
                     matched = True
-                
+
                 if matched:
                     filtered.append(candidate)
                 else:
                     logging.debug("Filtered out: %s (looking for: %s)", doc_name, document_filter)
-            
-            logging.info("After document filter '%s': %d candidates (from %d total)", 
-                        document_filter, len(filtered), len(candidates))
-            
+
+            logging.info("After document filter '%s': %d candidates (from %d total)",
+                         document_filter, len(filtered), len(candidates))
+
             if len(filtered) == 0:
                 logging.warning("⚠️ Document filter '%s' matched 0 documents!", document_filter)
                 logging.warning("⚠️ Available documents: %s", list(all_doc_names))
                 logging.warning("⚠️ Proceeding WITHOUT document filter to get all results")
                 # Don't filter - return all candidates to avoid empty results
                 filtered = candidates
-            
+
             candidates = filtered
-        
+
         # For exhaustive mode, skip reranking to preserve all results
         # Use higher threshold to keep more diverse content
         unique_entries = filter_near_duplicates(candidates, similarity_threshold=0.90)
-        
+
         # For exhaustive mode, bypass normal limits to get ALL relevant content
         context_entries = assemble_context_entries(unique_entries, max_chunks=100, exhaustive_mode=True, question_type=question_type)
-        
+
         logging.info("Exhaustive mode - Final context entries: %d", len(context_entries))
         if len(context_entries) == 0:
             logging.warning("⚠️ Exhaustive retrieval returned 0 results! Check metadata and filters.")
         return context_entries, user_input  # Return original query for exhaustive mode
-    
+
     else:
         # SEMANTIC MODE: Use TopK with query variations
         print(f"--- DEBUG: RETRIEVAL STRATEGY: SEMANTIC (k={strategy['k']}) ---", flush=True)
         logging.info("Using SEMANTIC retrieval mode with k=%d", strategy['k'])
         retrieval_k = strategy['k']  # Use adaptive k value
-        
+
         rewritten_query = rewrite_query(user_input, chat_history)
         print(f"Rewritten Query: '{rewritten_query}'", flush=True)
-        
+
         queries = generate_query_variations(rewritten_query, chat_history) or [rewritten_query]
         logging.info("Rewritten query: %s", rewritten_query)
         logging.info("Generated %d query variations for comprehensive retrieval", len(queries))
@@ -282,18 +287,18 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
         # Collect dense candidates from all query variations
         dense_candidates = []
         dense_docs_seen = set()
-        
+
         for query in queries:
             # If document filter is specified, apply it during retrieval
             if document_filter:
                 hits = session.vectorstore.similarity_search_with_score(
-                    query, 
+                    query,
                     k=retrieval_k,
                     filter={"document_name": document_filter}
                 )
             else:
                 hits = session.vectorstore.similarity_search_with_score(query, k=retrieval_k)
-            
+
             for doc, score in hits:
                 doc_id = id(doc)
                 if doc_id not in dense_docs_seen:
@@ -302,24 +307,24 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
                         doc_name = doc.metadata.get("document_name", "")
                         if document_filter.lower() not in doc_name.lower():
                             continue
-                    
+
                     dense_candidates.append((doc, score))
                     dense_docs_seen.add(doc_id)
-        
+
         logging.info("Collected %d unique dense candidates from %d queries", len(dense_candidates), len(queries))
 
         # Get sparse candidates
         sparse_candidates = session.sparse_index.query(rewritten_query, top_k=retrieval_k)
-        
+
         # Apply document filter to sparse candidates
         if document_filter:
             sparse_candidates = [
                 (doc, score) for doc, score in sparse_candidates
                 if document_filter.lower() in doc.metadata.get("document_name", "").lower()
             ]
-        
+
         logging.info("Collected %d sparse candidates", len(sparse_candidates))
-        
+
         # Merge and score
         merged = merge_candidate_scores(dense_candidates, sparse_candidates)
         logging.info("Merged candidates: %d", len(merged))
@@ -330,15 +335,15 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
         # Rerank with cross-encoder
         reranked = rerank_with_cross_encoder(rewritten_query, merged)
         logging.info("Reranked to top %d candidates", len(reranked))
-        
+
         # Filter duplicates
         unique_entries = filter_near_duplicates(reranked)
         logging.info("After deduplication: %d unique entries", len(unique_entries))
-    
+
     # Assemble context with document diversity - pass question_type for smarter selection
     context_entries = assemble_context_entries(unique_entries, question_type=question_type)
     logging.info("Final context entries selected: %d", len(context_entries))
-    
+
     # Log document distribution AND detailed content preview
     doc_distribution = {}
     print("--- DEBUG: SELECTED CONTEXT CHUNKS ---", flush=True)
@@ -346,11 +351,11 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
         doc_name = entry["doc"].metadata.get("document_name", "unknown")
         doc_distribution[doc_name] = doc_distribution.get(doc_name, 0) + 1
         content_snippet = entry["doc"].page_content[:100].replace('\n', ' ')
-        print(f"Chunk {i+1}: Doc='{doc_name}', Score={entry.get('score', 'N/A')}, Content='{content_snippet} ...'", flush=True)
-    
+        print(f"Chunk {i + 1}: Doc='{doc_name}', Score={entry.get('score', 'N/A')}, Content='{content_snippet} ...'", flush=True)
+
     print(f"Document distribution in context: {doc_distribution}", flush=True)
     print("--- DEBUG: END RETRIEVAL ---", flush=True)
-    
+
     return context_entries, rewritten_query  # Return rewritten query for LLM
 
 
@@ -359,7 +364,7 @@ def proceed_input(uploaded_files, document_name: str = None):
     try:
         # Unpack original filenames as well
         saved_files, collection_name, auto_document_name, original_filenames = validate_and_save_files(uploaded_files)
-        
+
         # Pass original filenames to loader
         docs = load_docs(saved_files, original_filenames)
         logging.info("Loaded %s documents from files", len(docs))
@@ -382,7 +387,7 @@ def proceed_input(uploaded_files, document_name: str = None):
             vectorstore=vectorstore,
             sparse_index=sparse_index,
         )
-        
+
         return PipelineResult(
             rag_session=rag_session,
             collection_name=collection_name,
@@ -399,9 +404,9 @@ def proceed_input(uploaded_files, document_name: str = None):
 
 def process_user_question(user_input, session: RagSession, chat_history=None):
     """Process user question and get answer from RAG chain.
-    
+
     Supports multi-intent question decomposition for comprehensive answers.
-    
+
     Returns:
         Dictionary containing:
         - answer: The text response
@@ -418,7 +423,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
 
         print("----- DEBUG: START QUERY PROCESSING -----", flush=True)
         print(f"User Q: {user_input}", flush=True)
-        
+
         # Get available documents for context-aware analysis
         available_docs = None
         try:
@@ -435,28 +440,27 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                         logging.info("Available documents for analysis: %s", available_docs)
         except Exception as e:
             logging.warning(f"Could not retrieve available documents: {e}")
-        
+
         # Always use LLM to analyze query - this is the primary path
         # LLM determines strategy, filters, and multi-intent decomposition
-        from retrieval.question_decomposition import analyze_query
         sub_questions = analyze_query(user_input, available_documents=available_docs, chat_history=chat_history)
-        
+
         # Check for explicit document filter in the question
         doc_filter = extract_document_filter_from_question(user_input)
         if doc_filter:
             logging.info("Detected document filter: %s", doc_filter)
-        
+
         if len(sub_questions) > 1:
             print(f"--- DEBUG: MULTI-INTENT DETECTED ---", flush=True)
             print(f"Decomposed into {len(sub_questions)} sub-questions: {[sq['question'] for sq in sub_questions]}", flush=True)
-        
+
         if len(sub_questions) > 1:
             logging.info("Processing %d sub-questions separately", len(sub_questions))
-            
+
             # OPTIMIZATION: Group sub-questions that will likely retrieve same chunks
             # If all sub-questions are semantic and about the same entity, process together
             all_semantic = all(sq.get("strategy", "semantic") == "semantic" for sq in sub_questions)
-            
+
             if all_semantic and len(sub_questions) <= 3:
                 # Check if questions are about same entity (share significant words)
                 question_words = [set(sq["question"].lower().split()) for sq in sub_questions]
@@ -464,7 +468,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                     common_words = question_words[0].intersection(*question_words[1:])
                     # If they share significant words, likely about same entity
                     significant_common = common_words - {"the", "a", "an", "of", "is", "what", "how", "when", "where", "who"}
-                    
+
                     if len(significant_common) >= 2:
                         # Combine into single question for efficiency
                         combined_question = user_input  # Use original multi-part question
@@ -472,7 +476,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                         print(f"--- DEBUG: OPTIMIZATION APPLIED ---", flush=True)
                         print(f"Detected related sub-questions about same entity, combining into single LLM call", flush=True)
                         print(f"Shared context: {significant_common}", flush=True)
-                        
+
                         relevant_context, resolved_question = retrieve_relevant_chunks(
                             combined_question,
                             session,
@@ -482,52 +486,52 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                             metadata_filters={},
                             question_type="general"
                         )
-                        
+
                         if relevant_context:
                             context_text = format_context_with_metadata(relevant_context)
                             sources = extract_source_documents(relevant_context)
-                            
+
                             # Ask LLM to answer all parts at once with deduplication instruction
                             payload = {
                                 "context": context_text,
                                 "history": "None",
                                 "question": f"{resolved_question}\n\nIMPORTANT: Structure your answer clearly for each part of the question. If the same information applies to multiple parts, mention it only once.",
                             }
-                            
+
                             logging.info("Invoking LLM with combined question...")
                             answer_text = session.rag_chain.invoke(payload)
-                            
+
                             print(f"Combined answer generated: {len(answer_text)} chars", flush=True)
                             print("----- DEBUG: END QUERY PROCESSING -----", flush=True)
-                            
+
                             return {
                                 "answer": answer_text,
                                 "sources": list(sources)
                             }
-            
+
             # Standard path: Process each sub-question independently
             sub_answers = []
             all_sources = set()
-            
+
             for sub_q in sub_questions:
                 question_text = sub_q["question"]
                 strategy_hint = sub_q.get("strategy", "semantic")
                 filters_hint = sub_q.get("filters", {})
                 question_type = sub_q.get("type", "general")
-                
+
                 logging.info("Processing sub-question: %s (Strategy: %s)", question_text, strategy_hint)
-                
+
                 # Retrieve context for this specific sub-question
                 relevant_context, resolved_question = retrieve_relevant_chunks(
-                    question_text, 
-                    session, 
+                    question_text,
+                    session,
                     chat_history,
                     document_filter=doc_filter,
                     strategy_hint=strategy_hint,
                     metadata_filters=filters_hint,
                     question_type=question_type
                 )
-                
+
                 if not relevant_context:
                     sub_answers.append({
                         "question": question_text,
@@ -535,44 +539,44 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                         "sources": []
                     })
                     continue
-                
+
                 # Extract sources
                 sources = extract_source_documents(relevant_context)
                 all_sources.update(sources)
-                
+
                 # Format context
                 context_text = format_context_with_metadata(relevant_context)
-                
+
                 # Get answer from LLM (history isolated)
                 payload = {
                     "context": context_text,
                     "history": "None",  # Isolated - rely only on retrieved context
                     "question": resolved_question,  # Use resolved question for better understanding
                 }
-                
+
                 logging.info("Invoking LLM for sub-question...")
                 answer_text = session.rag_chain.invoke(payload)
-                
+
                 sub_answers.append({
                     "question": question_text,
                     "answer": answer_text,
                     "sources": sources,
                     "type": question_type
                 })
-                
+
                 logging.info("Sub-answer generated: %s chars", len(answer_text))
-            
+
             # Synthesize all sub-answers into final answer
             final_answer = synthesize_answers(sub_answers, user_input)
-            
+
             print(f"Synthesized final answer: {len(final_answer)} chars", flush=True)
             print("----- DEBUG: END QUERY PROCESSING -----", flush=True)
-            
+
             return {
                 "answer": final_answer,
                 "sources": list(all_sources)
             }
-        
+
         else:
             # Single question - process normally
             # Use the type/strategy determined by valid analysis
@@ -580,10 +584,10 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             strategy_hint = primary_intent.get("strategy", "semantic")
             filters_hint = primary_intent.get("filters", {})
             question_type = primary_intent.get("type", "general")
-            
+
             relevant_context, resolved_question = retrieve_relevant_chunks(
-                user_input, 
-                session, 
+                user_input,
+                session,
                 chat_history,
                 document_filter=doc_filter,
                 strategy_hint=strategy_hint,
@@ -592,23 +596,23 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             )
             logging.info("Number of context entries retrieved: %d", len(relevant_context))
             logging.info("Resolved question for LLM: %s", resolved_question)
-            
+
             # Determine retrieval mode used
             strategy = determine_retrieval_strategy(user_input, strategy_hint, filters_hint)
             retrieval_mode = strategy['mode']
-            
+
             # Extract source documents
             sources = extract_source_documents(relevant_context)
-            
+
             context_text = format_context_with_metadata(relevant_context)
-            
+
             # Debug: Log the context being sent to LLM
             print("=" * 80, flush=True)
             print("----- DEBUG: LLM CONTEXT START -----", flush=True)
             print(context_text, flush=True)
             print("----- DEBUG: LLM CONTEXT END -----", flush=True)
             print("=" * 80, flush=True)
-            
+
             # History is only used for query rewriting, not sent to LLM
             # This prevents conversation memory from contaminating answers
             payload = {
@@ -616,7 +620,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                 "history": "None",  # Isolated - rely only on retrieved context
                 "question": resolved_question,  # Use resolved question instead of original
             }
-            
+
             print("----- DEBUG: INVOKING LLM -----", flush=True)
             if resolved_question != user_input:
                 print(f"Original Q: '{user_input}'", flush=True)
@@ -625,28 +629,28 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             print("----- DEBUG: LLM RAW RESPONSE -----", flush=True)
             print(answer_text, flush=True)
             print("----- DEBUG: END LLM RESPONSE -----", flush=True)
-            
+
             print(f"Answer generated successfully: {len(answer_text)} chars", flush=True)
-            
+
             # Use LLM-based validation for better accuracy (with heuristic fallback)
             validation_result = validate_answer_with_llm(
-                user_input, 
+                user_input,
                 answer_text,
-                relevant_context, 
+                relevant_context,
                 retrieval_mode=retrieval_mode
             )
-            logging.info("Answer validation: confidence=%s, complete=%s", 
-                        validation_result["confidence"], validation_result["is_complete"])
-            
+            logging.info("Answer validation: confidence=%s, complete=%s",
+                         validation_result["confidence"], validation_result["is_complete"])
+
             # Append warning if needed
             final_answer = append_validation_warning(answer_text, validation_result)
-            
+
             logging.info("----- DEBUG: END QUERY PROCESSING -----")
             return {
                 "answer": final_answer,
                 "sources": sources
             }
-        
+
     except Exception as exc:  # pylint: disable=broad-except
         error_msg = str(exc)
         logging.error("Error processing question: %s", error_msg, exc_info=True)
@@ -658,7 +662,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             user_friendly_error = "Error: API connection issue. Please check your GROQ_API_KEY."
         if "Gemini" in error_msg or "Google" in error_msg:
             user_friendly_error = "Error: API connection issue. Please check your GEMINI_API_KEY."
-            
+
         return {
             "answer": user_friendly_error,
             "sources": []
@@ -667,38 +671,34 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
 
 def add_documents_to_existing_session(uploaded_files, session_id: str, session_manager):
     """Add new documents to an existing chat session.
-    
+
     Args:
         uploaded_files: Files to add (can be UploadFile objects or file paths)
         session_id: ID of the session to update
         session_manager: SessionManager instance
-        
+
     Returns:
         dict with:
             - success: bool
             - message: str
             - filenames: list of added filenames
-            
+
     Raises:
         Exception if processing fails
     """
     try:
-        from pathlib import Path
-        import tempfile
-        import shutil
-        
         # Get session info
         session_info = session_manager.get_session_info(session_id)
         if not session_info:
             raise ValueError(f"Session {session_id} not found")
-        
+
         collection_name = session_info['collection_name']
-        
+
         # Save uploaded files temporarily with unique naming
         temp_dir = Path(tempfile.mkdtemp())
         saved_files = []
         original_filenames = []
-        
+
         try:
             # Handle different upload file formats
             for file in uploaded_files:
@@ -713,7 +713,7 @@ def add_documents_to_existing_session(uploaded_files, session_id: str, session_m
                     filename = file.name
                     original_filenames.append(filename)
                     temp_path = temp_dir / filename
-                    
+
                     if hasattr(file, 'file'):
                         # File-like object
                         with open(temp_path, 'wb') as f:
@@ -722,52 +722,52 @@ def add_documents_to_existing_session(uploaded_files, session_id: str, session_m
                         # BytesIO or similar
                         with open(temp_path, 'wb') as f:
                             f.write(file.read())
-                    
+
                     saved_files.append(str(temp_path))
-            
+
             if not saved_files:
                 raise ValueError("No valid files provided")
-            
+
             logging.info("Processing %d files for session %s", len(saved_files), session_id)
-            
+
             # Load and process new documents
             docs = load_docs(saved_files, original_filenames)
             if not docs:
                 raise ValueError("No content extracted from uploaded files")
-            
+
             logging.info("Loaded %d documents from new files", len(docs))
-            
+
             # Chunk the documents
             splits = get_document_chunks(docs)
             logging.info("Created %d chunks from new documents", len(splits))
-            
+
             # Add to session using SessionManager
             success = session_manager.add_documents_to_session(
                 session_id=session_id,
                 new_docs=splits,
                 new_original_filenames=original_filenames
             )
-            
+
             if not success:
                 raise Exception("Failed to add documents to session")
-            
+
             # Format document names nicely for display
             doc_names = ", ".join(original_filenames)
             message = f"Successfully added {len(original_filenames)} document(s): {doc_names}"
-            
+
             return {
                 "success": True,
                 "message": message,
                 "filenames": original_filenames
             }
-            
+
         finally:
             # Clean up temp directory
             try:
                 shutil.rmtree(temp_dir)
             except Exception as e:
                 logging.warning("Could not clean up temp directory: %s", e)
-                
+
     except Exception as e:
         logging.error("Error adding documents to session %s: %s", session_id, e, exc_info=True)
         raise
