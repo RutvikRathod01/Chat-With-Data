@@ -166,6 +166,49 @@ export const ChatProvider = ({ children }) => {
     setError(null);
   }, []);
 
+  // Add documents to existing session
+  const addDocumentsToSession = useCallback(async (files) => {
+    if (!currentSession) {
+      setError('No session selected');
+      return;
+    }
+
+    try {
+      setUploading(true);
+      setUploadProgress(0);
+      setError(null);
+
+      const result = await chatAPI.addDocumentsToSession(
+        currentSession.session_id,
+        files,
+        (progress) => {
+          setUploadProgress(progress);
+        }
+      );
+
+      // Add system message to messages
+      const systemMessage = {
+        role: 'system',
+        content: result.message,
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, systemMessage]);
+
+      // Reload session info to get updated document list
+      const updatedInfo = await chatAPI.getSessionInfo(currentSession.session_id);
+      setCurrentSession(updatedInfo);
+
+      return result;
+    } catch (err) {
+      console.error('Error adding documents:', err);
+      setError(err.message || 'Failed to add documents to session');
+      throw err;
+    } finally {
+      setUploading(false);
+      setUploadProgress(0);
+    }
+  }, [currentSession]);
+
   const value = {
     sessions,
     currentSession,
@@ -182,6 +225,7 @@ export const ChatProvider = ({ children }) => {
     clearChat,
     deleteSession,
     newChat,
+    addDocumentsToSession,
     setError,
   };
 

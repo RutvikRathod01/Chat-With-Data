@@ -233,6 +233,61 @@ class SessionManager:
     def get_session_info(self, session_id: str) -> Optional[dict]:
         """Get session information from storage."""
         return self.storage.get_session(session_id)
+    
+    def add_documents_to_session(
+        self,
+        session_id: str,
+        new_docs: list,
+        new_original_filenames: List[str]
+    ) -> bool:
+        """Add new documents to an existing session.
+        
+        Args:
+            session_id: ID of the session to update
+            new_docs: List of processed document chunks to add
+            new_original_filenames: List of original filenames being added
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Get existing session
+            rag_session = self.get_session(session_id)
+            if not rag_session:
+                logging.error("Session %s not found", session_id)
+                return False
+            
+            # Add documents to existing vector store
+            logging.info("Adding %d new chunks to session %s", len(new_docs), session_id)
+            rag_session.vectorstore.add_documents(new_docs)
+            
+            # Rebuild sparse index with combined documents
+            existing_docs = rag_session.vectorstore.get()
+            if existing_docs and existing_docs.get('documents'):
+                from langchain_core.documents import Document
+                all_docs = [
+                    Document(page_content=content, metadata=metadata if metadata else {})
+                    for content, metadata in zip(existing_docs['documents'], existing_docs['metadatas'])
+                ]
+                # Recreate sparse index with all documents
+                from retrieval.ranking import SparseIndex
+                rag_session.sparse_index = SparseIndex(all_docs)
+                logging.info("Rebuilt sparse index with %d total documents", len(all_docs))
+            
+            # Update database to track new documents
+            success = self.storage.append_documents_to_session(session_id, new_original_filenames)
+            
+            if success:
+                logging.info(
+                    "Successfully added %d documents to session %s",
+                    len(new_original_filenames), session_id
+                )
+            
+            return success
+            
+        except Exception as e:
+            logging.error("Error adding documents to session %s: %s", session_id, e, exc_info=True)
+            return False
 
 
 # Global instance

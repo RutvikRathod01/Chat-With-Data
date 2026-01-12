@@ -35,6 +35,7 @@ class ChatStorage:
                     document_name TEXT NOT NULL,
                     collection_name TEXT NOT NULL,
                     documents TEXT DEFAULT '[]',
+                    document_batches TEXT DEFAULT '[]',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     is_active INTEGER DEFAULT 1
@@ -45,6 +46,13 @@ class ChatStorage:
             try:
                 cursor.execute("ALTER TABLE sessions ADD COLUMN documents TEXT DEFAULT '[]'")
                 logging.info("Added documents column to sessions table")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            
+            # Add document_batches column if it doesn't exist
+            try:
+                cursor.execute("ALTER TABLE sessions ADD COLUMN document_batches TEXT DEFAULT '[]'")
+                logging.info("Added document_batches column to sessions table")
             except sqlite3.OperationalError:
                 pass  # Column already exists
             
@@ -111,7 +119,7 @@ class ChatStorage:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT session_id, document_name, collection_name, documents, created_at, last_updated
+                    SELECT session_id, document_name, collection_name, documents, document_batches, created_at, last_updated
                     FROM sessions
                     WHERE session_id = ? AND is_active = 1
                 """, (session_id,))
@@ -124,13 +132,20 @@ class ChatStorage:
                     except (json.JSONDecodeError, TypeError):
                         documents = []
                     
+                    # Parse document_batches JSON
+                    try:
+                        document_batches = json.loads(row[4]) if row[4] else []
+                    except (json.JSONDecodeError, TypeError):
+                        document_batches = []
+                    
                     return {
                         "session_id": row[0],
                         "document_name": row[1],
                         "collection_name": row[2],
                         "documents": documents,
-                        "created_at": row[4],
-                        "last_updated": row[5]
+                        "document_batches": document_batches,
+                        "created_at": row[5],
+                        "last_updated": row[6]
                     }
                 return None
         except Exception as e:
@@ -265,6 +280,134 @@ class ChatStorage:
                 return True
         except Exception as e:
             logging.error("Error updating session timestamp: %s", e)
+            return False
+    
+    def append_documents_to_session(self, session_id: str, new_documents: List[str]) -> bool:
+        """Append new documents to an existing session.
+        
+        Args:
+            session_id: Session to update
+            new_documents: List of new document filenames to add
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get current documents and batches
+                cursor.execute("""
+                    SELECT documents, document_batches
+                    FROM sessions
+                    WHERE session_id = ? AND is_active = 1
+                """, (session_id,))
+                
+                row = cursor.fetchone()
+                if not row:
+                    logging.error("Session %s not found", session_id)
+                    return False
+                
+                # Parse existing documents
+                try:
+                    current_docs = json.loads(row[0]) if row[0] else []
+                    current_batches = json.loads(row[1]) if row[1] else []
+                except (json.JSONDecodeError, TypeError):
+                    current_docs = []
+                    current_batches = []
+                
+                # Create new batch entry
+                new_batch = {
+                    "documents": new_documents,
+                    "added_at": datetime.now().isoformat()
+                }
+                
+                # Update lists
+                updated_docs = current_docs + new_documents
+                updated_batches = current_batches + [new_batch]
+                
+                # Update database
+                cursor.execute("""
+                    UPDATE sessions
+                    SET documents = ?,
+                        document_batches = ?,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE session_id = ?
+                """, (json.dumps(updated_docs), json.dumps(updated_batches), session_id))
+                
+                conn.commit()
+                logging.info(
+                    "Appended %d documents to session %s (total: %d)",
+                    len(new_documents), session_id, len(updated_docs)
+                )
+                return True
+                
+        except Exception as e:
+            logging.error("Error appending documents to session: %s", e)
+            return False
+    
+    def append_documents_to_session(self, session_id: str, new_documents: List[str]) -> bool:
+        """Append new documents to an existing session.
+        
+        Args:
+            session_id: Session to update
+            new_documents: List of new document filenames to add
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Get current documents and batches
+                cursor.execute("""
+                    SELECT documents, document_batches
+                    FROM sessions
+                    WHERE session_id = ? AND is_active = 1
+                """, (session_id,))
+                
+                row = cursor.fetchone()
+                if not row:
+                    logging.error("Session %s not found", session_id)
+                    return False
+                
+                # Parse existing documents
+                try:
+                    current_docs = json.loads(row[0]) if row[0] else []
+                    current_batches = json.loads(row[1]) if row[1] else []
+                except (json.JSONDecodeError, TypeError):
+                    current_docs = []
+                    current_batches = []
+                
+                # Create new batch entry
+                new_batch = {
+                    "documents": new_documents,
+                    "added_at": datetime.now().isoformat()
+                }
+                
+                # Update lists
+                updated_docs = current_docs + new_documents
+                updated_batches = current_batches + [new_batch]
+                
+                # Update database
+                cursor.execute("""
+                    UPDATE sessions
+                    SET documents = ?,
+                        document_batches = ?,
+                        last_updated = CURRENT_TIMESTAMP
+                    WHERE session_id = ?
+                """, (json.dumps(updated_docs), json.dumps(updated_batches), session_id))
+                
+                conn.commit()
+                logging.info(
+                    "Appended %d documents to session %s (total: %d)",
+                    len(new_documents), session_id, len(updated_docs)
+                )
+                return True
+                
+        except Exception as e:
+            logging.error("Error appending documents to session: %s", e)
             return False
 
 

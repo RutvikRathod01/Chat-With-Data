@@ -1,10 +1,23 @@
-import { FaUser, FaRobot } from 'react-icons/fa'
+import { FaUser, FaRobot, FaPaperclip } from 'react-icons/fa'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
 const Message = ({ message }) => {
   const isUser = message.role === 'user'
+  const isSystem = message.role === 'system'
+
+  // System messages (document additions, etc.)
+  if (isSystem) {
+    return (
+      <div className="flex justify-center my-4 animate-fade-in">
+        <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-full text-sm text-blue-700">
+          <FaPaperclip className="w-3 h-3" />
+          <span>{message.content}</span>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div

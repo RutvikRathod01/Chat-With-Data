@@ -80,6 +80,29 @@ export const chatAPI = {
     return response.data;
   },
 
+  // Add documents to existing session
+  addDocumentsToSession: async (sessionId, files, onProgress) => {
+    const formData = new FormData();
+    files.forEach((file) => {
+      formData.append('files', file);
+    });
+
+    const response = await api.post(`/sessions/${sessionId}/documents`, formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      onUploadProgress: (progressEvent) => {
+        if (onProgress) {
+          const percentCompleted = Math.round(
+            (progressEvent.loaded * 100) / progressEvent.total
+          );
+          onProgress(percentCompleted);
+        }
+      },
+    });
+    return response.data;
+  },
+
   // Chat
   sendMessage: async (sessionId, message) => {
     const response = await api.post('/chat', {

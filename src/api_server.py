@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from models.session_manager import get_session_manager
-from rag.pipeline import process_user_question, proceed_input
+from rag.pipeline import process_user_question, proceed_input, add_documents_to_existing_session
 
 # Load environment variables
 load_dotenv()
@@ -353,13 +353,109 @@ async def get_session_info(session_id: str):
             "created_at": session_info.get("created_at"),
             "last_updated": session_info.get("last_updated"),
             "is_active": is_active,
-            "message_count": len(messages)
+            "message_count": len(messages),
+            "documents": session_info.get("documents", []),
+            "document_batches": session_info.get("document_batches", [])
         }
     except HTTPException:
         raise
     except Exception as e:
         logging.error(f"Error fetching session info: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/sessions/{session_id}/documents")
+async def add_documents_to_session(session_id: str, files: List[UploadFile] = File(...)):
+    """
+    Add new documents to an existing chat session.
+    This allows users to continue their conversation with additional documents.
+    """
+    import tempfile
+    import shutil
+    
+    temp_dir = None
+    try:
+        # Validate session exists
+        rag_session = session_manager.get_session(session_id)
+        if not rag_session:
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found or expired. Please create a new session."
+            )
+        
+        if not files:
+            raise HTTPException(status_code=400, detail="No files provided")
+        
+        # Create temporary directory for uploaded files
+        temp_dir = tempfile.mkdtemp()
+        
+        # Save uploaded files to temporary directory
+        temp_files = []
+        original_filenames = []
+        
+        for file in files:
+            # Validate file type
+            allowed_extensions = [".pdf", ".docx", ".xlsx"]
+            file_ext = Path(file.filename).suffix.lower()
+            if file_ext not in allowed_extensions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid file type: {file.filename}. Allowed: PDF, DOCX, XLSX"
+                )
+            
+            # Save to temporary location
+            temp_path = Path(temp_dir) / file.filename
+            with open(temp_path, "wb") as f:
+                content = await file.read()
+                f.write(content)
+            
+            temp_files.append(temp_path)
+            original_filenames.append(file.filename)
+        
+        # Process and add documents to existing session
+        result = add_documents_to_existing_session(
+            uploaded_files=temp_files,
+            session_id=session_id,
+            session_manager=session_manager
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to add documents: {result.get('message', 'Unknown error')}"
+            )
+        
+        # Add system message to chat history indicating documents were added
+        documents_list = ", ".join(result["filenames"])
+        system_message = f"📎 Added {len(result['filenames'])} document(s) to conversation: {documents_list}"
+        session_manager.save_message(session_id, "system", system_message)
+        
+        logging.info(f"Successfully added documents to session {session_id}: {documents_list}")
+        
+        return {
+            "message": result["message"],
+            "session_id": session_id,
+            "filenames": result["filenames"],
+            "count": len(result["filenames"])
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error adding documents to session {session_id}: {e}", exc_info=True)
+        # Don't break the chat - return error but session remains usable
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error adding documents: {str(e)}. Your chat session is still active."
+        )
+    finally:
+        # Clean up temporary directory
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                shutil.rmtree(temp_dir)
+                logging.info(f"Cleaned up temporary directory: {temp_dir}")
+            except Exception as e:
+                logging.warning(f"Could not clean up temp directory {temp_dir}: {e}")
 
 
 # Error handlers

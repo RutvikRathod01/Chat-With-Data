@@ -665,10 +665,115 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
         }
 
 
+def add_documents_to_existing_session(uploaded_files, session_id: str, session_manager):
+    """Add new documents to an existing chat session.
+    
+    Args:
+        uploaded_files: Files to add (can be UploadFile objects or file paths)
+        session_id: ID of the session to update
+        session_manager: SessionManager instance
+        
+    Returns:
+        dict with:
+            - success: bool
+            - message: str
+            - filenames: list of added filenames
+            
+    Raises:
+        Exception if processing fails
+    """
+    try:
+        from pathlib import Path
+        import tempfile
+        import shutil
+        
+        # Get session info
+        session_info = session_manager.get_session_info(session_id)
+        if not session_info:
+            raise ValueError(f"Session {session_id} not found")
+        
+        collection_name = session_info['collection_name']
+        
+        # Save uploaded files temporarily with unique naming
+        temp_dir = Path(tempfile.mkdtemp())
+        saved_files = []
+        original_filenames = []
+        
+        try:
+            # Handle different upload file formats
+            for file in uploaded_files:
+                # Check if it's already a file path (from API endpoint)
+                if isinstance(file, (str, Path)):
+                    file_path = Path(file)
+                    if file_path.exists():
+                        original_filenames.append(file_path.name)
+                        saved_files.append(str(file_path))
+                elif hasattr(file, 'name'):
+                    # UploadFile object (from FastAPI)
+                    filename = file.name
+                    original_filenames.append(filename)
+                    temp_path = temp_dir / filename
+                    
+                    if hasattr(file, 'file'):
+                        # File-like object
+                        with open(temp_path, 'wb') as f:
+                            shutil.copyfileobj(file.file, f)
+                    elif hasattr(file, 'read'):
+                        # BytesIO or similar
+                        with open(temp_path, 'wb') as f:
+                            f.write(file.read())
+                    
+                    saved_files.append(str(temp_path))
+            
+            if not saved_files:
+                raise ValueError("No valid files provided")
+            
+            logging.info("Processing %d files for session %s", len(saved_files), session_id)
+            
+            # Load and process new documents
+            docs = load_docs(saved_files, original_filenames)
+            if not docs:
+                raise ValueError("No content extracted from uploaded files")
+            
+            logging.info("Loaded %d documents from new files", len(docs))
+            
+            # Chunk the documents
+            splits = get_document_chunks(docs)
+            logging.info("Created %d chunks from new documents", len(splits))
+            
+            # Add to session using SessionManager
+            success = session_manager.add_documents_to_session(
+                session_id=session_id,
+                new_docs=splits,
+                new_original_filenames=original_filenames
+            )
+            
+            if not success:
+                raise Exception("Failed to add documents to session")
+            
+            return {
+                "success": True,
+                "message": f"Successfully added {len(original_filenames)} document(s)",
+                "filenames": original_filenames
+            }
+            
+        finally:
+            # Clean up temp directory
+            try:
+                shutil.rmtree(temp_dir)
+            except Exception as e:
+                logging.warning("Could not clean up temp directory: %s", e)
+                
+    except Exception as e:
+        logging.error("Error adding documents to session %s: %s", session_id, e, exc_info=True)
+        raise
+
+
 __all__ = [
     "format_chat_history",
     "build_rag_chain",
     "retrieve_relevant_chunks",
     "proceed_input",
     "process_user_question",
+    "add_documents_to_existing_session",
 ]
