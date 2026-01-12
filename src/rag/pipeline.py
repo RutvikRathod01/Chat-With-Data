@@ -26,6 +26,7 @@ from retrieval.question_decomposition import (
     synthesize_answers,
 )
 from retrieval.answer_validation import (
+    validate_answer_with_llm,
     validate_context_completeness,
     append_validation_warning,
 )
@@ -156,9 +157,18 @@ def build_rag_chain(system_prompt, use_groq=None, use_gemini=None):
     return rag_chain
 
 
-def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None, document_filter=None, strategy_hint=None, metadata_filters=None):
+def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None, document_filter=None, strategy_hint=None, metadata_filters=None, question_type="general"):
     """
     Retrieves the most relevant chunks based on query type and adaptive strategy.
+    
+    Args:
+        user_input: The user's query
+        session: RAG session with vector store and sparse index
+        chat_history: Previous conversation history
+        document_filter: Optional document name to filter by
+        strategy_hint: Suggested retrieval strategy (exhaustive/semantic)
+        metadata_filters: Additional metadata filters
+        question_type: Type of question (count/list/timeline/general)
     """
     print(f"--- DEBUG: START RETRIEVAL ---", flush=True)
     print(f"Query: '{user_input}'", flush=True)
@@ -245,7 +255,7 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
         unique_entries = filter_near_duplicates(candidates, similarity_threshold=0.90)
         
         # For exhaustive mode, bypass normal limits to get ALL relevant content
-        context_entries = assemble_context_entries(unique_entries, max_chunks=100, exhaustive_mode=True)
+        context_entries = assemble_context_entries(unique_entries, max_chunks=100, exhaustive_mode=True, question_type=question_type)
         
         logging.info("Exhaustive mode - Final context entries: %d", len(context_entries))
         if len(context_entries) == 0:
@@ -321,8 +331,8 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
         unique_entries = filter_near_duplicates(reranked)
         logging.info("After deduplication: %d unique entries", len(unique_entries))
     
-    # Assemble context with document diversity
-    context_entries = assemble_context_entries(unique_entries)
+    # Assemble context with document diversity - pass question_type for smarter selection
+    context_entries = assemble_context_entries(unique_entries, question_type=question_type)
     logging.info("Final context entries selected: %d", len(context_entries))
     
     # Log document distribution AND detailed content preview
@@ -405,10 +415,27 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
         print("----- DEBUG: START QUERY PROCESSING -----", flush=True)
         print(f"User Q: {user_input}", flush=True)
         
+        # Get available documents for context-aware analysis
+        available_docs = None
+        try:
+            # Get list of unique documents in the vector store
+            if session and session.vectorstore:
+                all_docs = session.vectorstore.get()
+                if all_docs and 'metadatas' in all_docs:
+                    doc_names = set()
+                    for metadata in all_docs['metadatas']:
+                        if metadata and 'document_name' in metadata:
+                            doc_names.add(metadata['document_name'])
+                    available_docs = list(doc_names) if doc_names else None
+                    if available_docs:
+                        logging.info("Available documents for analysis: %s", available_docs)
+        except Exception as e:
+            logging.warning(f"Could not retrieve available documents: {e}")
+        
         # Always use LLM to analyze query - this is the primary path
         # LLM determines strategy, filters, and multi-intent decomposition
         from retrieval.question_decomposition import analyze_query
-        sub_questions = analyze_query(user_input)
+        sub_questions = analyze_query(user_input, available_documents=available_docs, chat_history=chat_history)
         
         # Check for explicit document filter in the question
         doc_filter = extract_document_filter_from_question(user_input)
@@ -441,7 +468,8 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                     chat_history,
                     document_filter=doc_filter,
                     strategy_hint=strategy_hint,
-                    metadata_filters=filters_hint
+                    metadata_filters=filters_hint,
+                    question_type=question_type
                 )
                 
                 if not relevant_context:
@@ -495,6 +523,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             primary_intent = sub_questions[0]
             strategy_hint = primary_intent.get("strategy", "semantic")
             filters_hint = primary_intent.get("filters", {})
+            question_type = primary_intent.get("type", "general")
             
             relevant_context = retrieve_relevant_chunks(
                 user_input, 
@@ -502,7 +531,8 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                 chat_history,
                 document_filter=doc_filter,
                 strategy_hint=strategy_hint,
-                metadata_filters=filters_hint
+                metadata_filters=filters_hint,
+                question_type=question_type
             )
             logging.info("Number of context entries retrieved: %d", len(relevant_context))
             
@@ -538,11 +568,11 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             
             print(f"Answer generated successfully: {len(answer_text)} chars", flush=True)
             
-            # Validate answer completeness with retrieval mode context
-            validation_result = validate_context_completeness(
+            # Use LLM-based validation for better accuracy (with heuristic fallback)
+            validation_result = validate_answer_with_llm(
                 user_input, 
-                relevant_context, 
                 answer_text,
+                relevant_context, 
                 retrieval_mode=retrieval_mode
             )
             logging.info("Answer validation: confidence=%s, complete=%s", 

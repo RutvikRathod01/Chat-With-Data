@@ -164,7 +164,7 @@ def count_tokens(item):
     return len(text.split())
 
 
-def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS, exhaustive_mode=False):
+def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS, exhaustive_mode=False, question_type="general"):
     """Assemble context entries with document diversity to ensure multi-document coverage.
     
     Uses round-robin selection across documents to ensure all source documents
@@ -174,6 +174,7 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS, exhaustive_
         entries: List of candidate entries with docs and scores
         max_chunks: Maximum number of chunks to return
         exhaustive_mode: If True, bypass token budget limits for complete results
+        question_type: Type of question (count/list/timeline/general) to adjust selection strategy
     """
     if not entries:
         return []
@@ -206,12 +207,25 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS, exhaustive_
     final_entries = []
     token_count = 0
     
-    # In exhaustive mode, use much higher token budget to get complete results
-    effective_token_budget = CONTEXT_TOKEN_BUDGET * 3 if exhaustive_mode else CONTEXT_TOKEN_BUDGET
-    logging.info("Token budget: %d (exhaustive=%s)", effective_token_budget, exhaustive_mode)
+    # Adjust strategy based on question type
+    is_list_or_count = question_type in ["list", "count"]
     
-    # Calculate minimum chunks per document to ensure fair representation
-    min_chunks_per_doc = max(2, max_chunks // len(sorted_clusters)) if sorted_clusters else 1
+    # In exhaustive mode OR list/count queries, use higher token budget
+    if exhaustive_mode or is_list_or_count:
+        effective_token_budget = CONTEXT_TOKEN_BUDGET * 3
+        logging.info("Using expanded token budget for %s query type", question_type)
+    else:
+        effective_token_budget = CONTEXT_TOKEN_BUDGET
+    
+    logging.info("Token budget: %d (exhaustive=%s, type=%s)", effective_token_budget, exhaustive_mode, question_type)
+    
+    # For list/count queries, ensure we get at least 1 chunk from EACH document
+    # For other queries, allow more concentration on top documents
+    if is_list_or_count:
+        min_chunks_per_doc = max(1, max_chunks // (len(sorted_clusters) * 2)) if sorted_clusters else 1
+        logging.info("List/count query: ensuring at least %d chunks per document", min_chunks_per_doc)
+    else:
+        min_chunks_per_doc = max(2, max_chunks // len(sorted_clusters)) if sorted_clusters else 1
     
     # First pass: Get at least min_chunks_per_doc from each document
     for doc_name, cluster in sorted_clusters:
@@ -221,11 +235,11 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS, exhaustive_
                 break
                 
             doc_tokens = count_tokens(entry["doc"])
-            # In exhaustive mode, be more lenient with token budget
-            if not exhaustive_mode and token_count + doc_tokens > effective_token_budget and final_entries:
+            # In exhaustive mode or list queries, be more lenient with token budget
+            if not (exhaustive_mode or is_list_or_count) and token_count + doc_tokens > effective_token_budget and final_entries:
                 continue
-            elif exhaustive_mode and token_count + doc_tokens > effective_token_budget:
-                logging.debug("Exhaustive mode: Including chunk despite token budget (total: %d)", token_count + doc_tokens)
+            elif (exhaustive_mode or is_list_or_count) and token_count + doc_tokens > effective_token_budget:
+                logging.debug("Expanded mode: Including chunk despite token budget (total: %d)", token_count + doc_tokens)
                 
             final_entries.append(entry)
             token_count += doc_tokens
@@ -250,8 +264,8 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS, exhaustive_
                         break
                         
                     doc_tokens = count_tokens(entry["doc"])
-                    # In exhaustive mode, be more lenient with token budget
-                    if not exhaustive_mode and token_count + doc_tokens > effective_token_budget:
+                    # In exhaustive mode or list queries, be more lenient with token budget
+                    if not (exhaustive_mode or is_list_or_count) and token_count + doc_tokens > effective_token_budget:
                         continue
                         
                     final_entries.append(entry)
@@ -261,6 +275,14 @@ def assemble_context_entries(entries, max_chunks=FINAL_CONTEXT_DOCS, exhaustive_
                     continue
 
     logging.info(f"Assembled {len(final_entries)} context entries from {len(sorted_clusters)} documents")
+    
+    # Log document distribution to help debug coverage issues
+    doc_distribution = {}
+    for entry in final_entries:
+        doc_name = entry["doc"].metadata.get("document_name", "unknown")
+        doc_distribution[doc_name] = doc_distribution.get(doc_name, 0) + 1
+    logging.info(f"Document distribution in final context: {doc_distribution}")
+    
     return final_entries
 
 

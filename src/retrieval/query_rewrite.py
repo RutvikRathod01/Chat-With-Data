@@ -105,8 +105,30 @@ def rewrite_query(user_input, chat_history):
 
     except Exception as e:
         logging.error(f"Error re-writing query: {e}")
-        # Fallback to simple concatenation if LLM fails
-        return f"{trimmed} (Context: {history_str[-100:]})" if 'history_str' in locals() else trimmed
+        
+        # Try fallback with simpler/faster LLM model instead of static concatenation
+        try:
+            logging.info("Attempting fallback LLM for query rewriting...")
+            # Use Groq's faster model as fallback (or Gemini Flash)
+            fallback_llm = None
+            if USE_GROQ:
+                # Mixtral is faster than main model
+                fallback_llm = ChatGroq(model="mixtral-8x7b-32768", temperature=0.1)
+            elif USE_GEMINI:
+                # Gemini Flash is faster
+                fallback_llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.1)
+            
+            if fallback_llm and 'history_str' in locals():
+                simple_prompt = f"Rewrite as standalone query using this context: {history_str[-200:]}\n\nQuestion: {trimmed}"
+                rewritten = fallback_llm.invoke(simple_prompt)
+                if isinstance(rewritten, str):
+                    return rewritten.strip()
+                return str(rewritten).strip()
+        except Exception as fallback_error:
+            logging.warning(f"Fallback LLM also failed: {fallback_error}")
+        
+        # Final fallback: return original question
+        return trimmed
 
 
 from langchain_core.output_parsers import JsonOutputParser

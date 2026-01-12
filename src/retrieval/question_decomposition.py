@@ -24,45 +24,116 @@ def get_llm():
     return None
 
 
-def analyze_query(question: str) -> List[Dict[str, Any]]:
+def analyze_query(question: str, available_documents: List[str] = None, chat_history: List[Dict] = None) -> List[Dict[str, Any]]:
     """
-    Analyze a user query using an LLM to:
-    1. Decompose multi-intent questions.
-    2. Determine the best retrieval strategy (Exhaustive vs Semantic).
-    3. Extract metadata filters (e.g. project names, entities).
+    Analyze a user query using pure LLM intelligence (no static keywords).
     
-    This replaces static keyword matching with intelligent understanding.
+    Dynamically determines:
+    1. Multi-intent decomposition
+    2. Retrieval strategy (exhaustive vs semantic)
+    3. Question type and expected response format
+    4. Target documents (if applicable)
+    
+    Args:
+        question: User's question
+        available_documents: List of available document names for context-aware analysis
+        chat_history: Recent conversation history for resolving pronouns and context
+    
+    Returns:
+        List of sub-question dictionaries with strategy, type, and metadata
     """
-    # Fast path: simple questions probably don't need LLM
-    if len(question.split()) < 5 and "and" not in question.lower():
-        # Even for fast path, we return the new structure
-        return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
-
     logging.info("Analyzing query with LLM: %s", question)
     
     try:
         llm = get_llm()
         if not llm:
-             # Fallback to basic structure if no LLM
-             return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
+            logging.warning("No LLM available for query analysis")
+            return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
+        
+        # Build document context for LLM awareness
+        doc_context = ""
+        if available_documents:
+            doc_list = "\n".join(f"- {doc}" for doc in available_documents[:10])  # Limit to 10
+            doc_context = f"\n\nAvailable Documents:\n{doc_list}"
+
+        # Build chat history context for pronoun resolution
+        history_context = ""
+        if chat_history:
+            recent_history = chat_history[-4:] if len(chat_history) >= 4 else chat_history
+            history_lines = []
+            for msg in recent_history:
+                role = "User" if msg.get("role") == "user" else "Assistant"
+                content = str(msg.get("content", ""))[:300]  # Limit to 300 chars per message
+                history_lines.append(f"{role}: {content}")
+            if history_lines:
+                history_context = f"\n\nRecent Conversation History:\n" + "\n".join(history_lines)
 
         prompt = ChatPromptTemplate.from_template(
-            """Analyze the following user question for a RAG system.
+            """Analyze the following user question for a RAG (Retrieval-Augmented Generation) system that processes multiple documents.{doc_context}{history_context}
             
-            Tasks:
-            1. If it contains multiple distinct questions, break it down.
-            2. IMPORTANT: When breaking down questions, resolve pronouns (like "them", "it", "they") 
-               by adding context from the original question. For example:
-               - "How many projects? Give me names of them" → "How many projects?", "Give me names of the projects"
-               - "Who is the lead? What is their role?" → "Who is the lead?", "What is the role of the lead?"
-            3. For each question, decide the retrieval strategy:
-               - "exhaustive": For "how many", "list all", "summarize all", "what are the projects", or counting/listing queries.
-               - "semantic": For specific fact retrieval like "details of Project X", "who is the lead", "what is the budget".
-            4. Extract filters ONLY for explicit structural attributes (e.g. "section: budget", "type: table").
-               IMPORTANT: Do NOT create metadata filters for 'project', 'person', 'location', or 'date'. 
-               These are handled by the search content, not metadata keys. Return empty filters {} for these.
+            CRITICAL INSTRUCTIONS:
             
-            Output strictly JSON:
+            1. **Question Decomposition**: If the question contains multiple distinct intents, break it down into separate sub-questions.
+               When breaking down questions, resolve pronouns ("them", "it", "they") by using the conversation history context:
+               - "How many projects? Give me names of them" → ["How many projects?", "Give me names of the projects"]
+               - "Who is the lead? What is their role?" → ["Who is the lead?", "What is the role of the lead?"]
+               - If conversation history mentions "AI-Powered Document project" and user asks "what about it?", resolve "it" to "AI-Powered Document project"
+               - Use the most recent relevant entity from conversation history to replace vague pronouns
+            
+            2. **Retrieval Strategy Selection** (MOST IMPORTANT):
+               
+               Understand the user's INTENT, not just keywords. Consider paraphrases and implicit needs.
+               
+               Use "exhaustive" strategy when the question requires information from MULTIPLE sources:
+               - Listing/enumerating: "list all", "what are all", "give me all", "show me all", "name all"
+                 * Also: "enumerate", "tell me about each", "describe every", "mention all"
+               - Counting/quantifying: "how many", "count", "total number", "number of"
+                 * Also: "quantity of", "amount of", "how much"
+               - Summarizing across documents: "summarize all", "overview of all", "tell me about all"
+                 * Also: "give me summary", "what's the overview"
+               - Multiple items: "what projects", "which documents", "all locations", "every person"
+                 * Also: "the projects" (when multiple exist), "project costs" (implies all projects)
+               - Comparative analysis: "compare", "differences between", "similarities across"
+               
+               IMPORTANT: If the question COULD involve multiple documents/items, use exhaustive.
+               Example: "project budgets" → exhaustive (assumes multiple projects exist)
+               Example: "tell me about projects" → exhaustive (multiple projects implied)
+               
+               EXAMPLES OF EXHAUSTIVE QUERIES:
+               - "list out all projects name" → exhaustive
+               - "how many projects are there" → exhaustive
+               - "what are all the locations mentioned" → exhaustive
+               - "give me names of all team members" → exhaustive
+               - "summarize all project budgets" → exhaustive
+               - "what projects exist" → exhaustive
+               - "show all timelines" → exhaustive
+               
+               Use "semantic" strategy ONLY for:
+               - Specific fact retrieval: "what is the budget of Project X"
+               - Single entity queries: "who is the lead of Alpha project"
+               - Targeted information: "what is the deadline for Project Y"
+               - Definition/explanation: "what does term X mean"
+               
+               EXAMPLES OF SEMANTIC QUERIES:
+               - "what is the budget of AI-Powered Document Intelligence Platform" → semantic
+               - "who is the project lead for Project Alpha" → semantic
+               - "when is the deadline for the first milestone" → semantic
+            
+            3. **Question Type Classification**:
+               - "count": Questions asking for quantities (how many, count, total number)
+               - "list": Questions asking for enumeration (list all, what are, give me names)
+               - "timeline": Questions about schedules, dates, deadlines
+               - "general": Other informational queries
+            
+            4. **Metadata Filters**:
+               Extract filters ONLY for explicit structural attributes like "section: budget" or "type: table".
+               Do NOT create metadata filters for content-based terms (project names, people, locations, dates).
+               Return empty filters {{}} unless there's an explicit structural constraint.
+            
+            IMPORTANT: When in doubt between exhaustive and semantic, lean towards exhaustive for any query that 
+            might require information from multiple documents or sources.
+            
+            Output strictly JSON (no markdown formatting):
             {{
                 "sub_questions": [
                     {{
@@ -79,24 +150,29 @@ def analyze_query(question: str) -> List[Dict[str, Any]]:
         )
         
         chain = prompt | llm | JsonOutputParser()
-        result = chain.invoke({"question": question})
+        result = chain.invoke({
+            "question": question,
+            "doc_context": doc_context,
+            "history_context": history_context
+        })
         
         sub_questions = result.get("sub_questions", [])
         
         if not sub_questions:
+            logging.warning("LLM returned empty sub_questions for: %s", question)
             return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
-            
+        
         logging.info("LLM Analysis Result: %s", sub_questions)
         return sub_questions
 
     except Exception as e:
-        logging.error(f"LLM query analysis failed: {e}. Returning default.")
+        logging.error(f"LLM query analysis failed: {e}")
         return [{"question": question, "type": "general", "strategy": "semantic", "filters": {}}]
 
 
-def decompose_question(question: str) -> List[Dict[str, Any]]:
+def decompose_question(question: str, available_documents: List[str] = None, chat_history: List[Dict] = None) -> List[Dict[str, Any]]:
     """Backward compatibility wrapper."""
-    return analyze_query(question)
+    return analyze_query(question, available_documents, chat_history)
 
 
 def detect_multi_intent_question(question: str) -> bool:
