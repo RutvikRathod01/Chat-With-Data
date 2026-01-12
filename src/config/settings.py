@@ -1,6 +1,8 @@
 import datetime
 import logging
 import os
+import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytz
@@ -9,7 +11,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 # Paths
 IST = pytz.timezone("Asia/Kolkata")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-LOG_FILE = f"{datetime.datetime.now(IST).strftime('%m_%d_%Y_%H_%M_%S')}.log"
+LOG_FILE = f"{datetime.datetime.now(IST).strftime('%Y_%m_%d')}.log"  # Daily log file
 LOG_PATH = PROJECT_ROOT / "logs"
 DATA_DIR = PROJECT_ROOT / "data"
 EMBEDDING_STORE_DIR = PROJECT_ROOT / "embedding_store"
@@ -19,11 +21,40 @@ LOG_PATH.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True) 
 EMBEDDING_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-logging.basicConfig(
-    filename=str(LOG_PATH / LOG_FILE),
-    format="[ %(asctime)s ] %(lineno)d %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+# Configure logging with rotation and both file + console output
+log_format = "[ %(asctime)s ] %(lineno)d %(name)s - %(levelname)s - %(message)s"
+log_file_path = LOG_PATH / LOG_FILE
+
+# Create handlers
+file_handler = RotatingFileHandler(
+    log_file_path,
+    maxBytes=10 * 1024 * 1024,  # 10MB per file
+    backupCount=7,  # Keep 7 backup files (1 week of daily logs)
+    encoding='utf-8'
 )
+file_handler.setLevel(logging.INFO)
+file_handler.setFormatter(logging.Formatter(log_format))
+
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(logging.Formatter(log_format))
+
+# Configure root logger with both handlers
+logging.basicConfig(
+    level=logging.INFO,
+    format=log_format,
+    handlers=[file_handler, console_handler]
+)
+
+# Configure uvicorn loggers to use our handlers
+uvicorn_logger = logging.getLogger("uvicorn")
+uvicorn_logger.handlers = [file_handler, console_handler]
+
+uvicorn_access = logging.getLogger("uvicorn.access")
+uvicorn_access.handlers = [file_handler, console_handler]
+
+logger = logging.getLogger(__name__)
+logger.info(f"Logging configured - Daily log file: {LOG_FILE}")
 
 # Chunking heuristics
 SLIDE_NEWLINE_RATIO_THRESHOLD = 0.15

@@ -14,7 +14,7 @@ from config.settings import DATA_DIR
 from typing import List, Optional
 from datetime import datetime
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -28,16 +28,9 @@ load_dotenv()
 os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
 os.environ["GOOGLE_API_KEY"] = os.getenv("GEMINI_API_KEY")  # Gemini uses GOOGLE_API_KEY
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Logging is already configured in settings.py - no need to reconfigure
 logger = logging.getLogger(__name__)
-logger.info("Logging configured successfully")
+logger.info("API Server starting...")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -45,6 +38,15 @@ app = FastAPI(
     description="REST API for RAG-based document chat application",
     version="1.0.0"
 )
+
+# Middleware to log all requests
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all incoming HTTP requests."""
+    logger.info(f"{request.method} {request.url.path} - Client: {request.client.host}")
+    response = await call_next(request)
+    logger.info(f"{request.method} {request.url.path} - Status: {response.status_code}")
+    return response
 
 # Configure CORS for React frontend
 app.add_middleware(
@@ -521,10 +523,39 @@ async def general_exception_handler(request, exc):
 
 # Run server
 if __name__ == "__main__":
+    import copy
+    from config.settings import LOG_PATH, LOG_FILE
+    
+    # Get our custom log file path
+    log_file_path = str(LOG_PATH / LOG_FILE)
+    
+    # Create custom Uvicorn log config that writes to our file
+    log_config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    
+    # Update formatters to match our format
+    log_config["formatters"]["default"]["fmt"] = "[ %(asctime)s ] %(name)s - %(levelname)s - %(message)s"
+    log_config["formatters"]["access"]["fmt"] = "[ %(asctime)s ] %(name)s - %(levelname)s - %(message)s"
+    
+    # Add file handler to all loggers
+    log_config["handlers"]["file"] = {
+        "class": "logging.handlers.RotatingFileHandler",
+        "formatter": "default",
+        "filename": log_file_path,
+        "maxBytes": 10485760,  # 10MB
+        "backupCount": 7,
+        "encoding": "utf-8"
+    }
+    
+    # Update loggers to use both console and file handlers
+    for logger_name in ["uvicorn", "uvicorn.error", "uvicorn.access"]:
+        if logger_name in log_config["loggers"]:
+            log_config["loggers"][logger_name]["handlers"] = ["default", "file"]
+    
     uvicorn.run(
         "api_server:app",
         host="0.0.0.0",
         port=8000,
         reload=True,
-        log_level="info"
+        log_level="info",
+        log_config=log_config
     )

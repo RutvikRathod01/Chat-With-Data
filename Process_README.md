@@ -396,6 +396,7 @@ You can have many sessions:
 - Chat history automatically saved
 - No data loss
 - Resume conversations anytime
+- **Document count tracking**: Each session displays the number of uploaded documents and total messages, making it easy to track conversation depth and content volume at a glance
 
 ### Session Renaming ✨ NEW
 
@@ -415,6 +416,7 @@ You can have many sessions:
 - ✅ Validation prevents empty or invalid names
 - ✅ In-memory sessions automatically updated
 - ✅ Old name tracked for reference
+- ✅ Document and message counts displayed for each session
 
 **Example Workflow**:
 ```
