@@ -169,6 +169,10 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
         strategy_hint: Suggested retrieval strategy (exhaustive/semantic)
         metadata_filters: Additional metadata filters
         question_type: Type of question (count/list/timeline/general)
+    
+    Returns:
+        Tuple of (context_entries, resolved_query) where resolved_query is the
+        context-resolved version of user_input (for semantic mode) or user_input itself
     """
     print(f"--- DEBUG: START RETRIEVAL ---", flush=True)
     print(f"Query: '{user_input}'", flush=True)
@@ -260,7 +264,7 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
         logging.info("Exhaustive mode - Final context entries: %d", len(context_entries))
         if len(context_entries) == 0:
             logging.warning("⚠️ Exhaustive retrieval returned 0 results! Check metadata and filters.")
-        return context_entries
+        return context_entries, user_input  # Return original query for exhaustive mode
     
     else:
         # SEMANTIC MODE: Use TopK with query variations
@@ -347,7 +351,7 @@ def retrieve_relevant_chunks(user_input, session: RagSession, chat_history=None,
     print(f"Document distribution in context: {doc_distribution}", flush=True)
     print("--- DEBUG: END RETRIEVAL ---", flush=True)
     
-    return context_entries
+    return context_entries, rewritten_query  # Return rewritten query for LLM
 
 
 def proceed_input(uploaded_files, document_name: str = None):
@@ -462,7 +466,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                 logging.info("Processing sub-question: %s (Strategy: %s)", question_text, strategy_hint)
                 
                 # Retrieve context for this specific sub-question
-                relevant_context = retrieve_relevant_chunks(
+                relevant_context, resolved_question = retrieve_relevant_chunks(
                     question_text, 
                     session, 
                     chat_history,
@@ -491,7 +495,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                 payload = {
                     "context": context_text,
                     "history": "None",  # Isolated - rely only on retrieved context
-                    "question": question_text,
+                    "question": resolved_question,  # Use resolved question for better understanding
                 }
                 
                 logging.info("Invoking LLM for sub-question...")
@@ -525,7 +529,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             filters_hint = primary_intent.get("filters", {})
             question_type = primary_intent.get("type", "general")
             
-            relevant_context = retrieve_relevant_chunks(
+            relevant_context, resolved_question = retrieve_relevant_chunks(
                 user_input, 
                 session, 
                 chat_history,
@@ -535,6 +539,7 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
                 question_type=question_type
             )
             logging.info("Number of context entries retrieved: %d", len(relevant_context))
+            logging.info("Resolved question for LLM: %s", resolved_question)
             
             # Determine retrieval mode used
             strategy = determine_retrieval_strategy(user_input, strategy_hint, filters_hint)
@@ -557,10 +562,13 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
             payload = {
                 "context": context_text,
                 "history": "None",  # Isolated - rely only on retrieved context
-                "question": user_input,
+                "question": resolved_question,  # Use resolved question instead of original
             }
             
             print("----- DEBUG: INVOKING LLM -----", flush=True)
+            if resolved_question != user_input:
+                print(f"Original Q: '{user_input}'", flush=True)
+                print(f"Resolved Q: '{resolved_question}'", flush=True)
             answer_text = session.rag_chain.invoke(payload)
             print("----- DEBUG: LLM RAW RESPONSE -----", flush=True)
             print(answer_text, flush=True)
