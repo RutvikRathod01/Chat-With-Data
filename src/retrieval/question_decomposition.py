@@ -12,7 +12,7 @@ from config.settings import USE_GROQ, USE_GEMINI, GROQ_MODEL, GEMINI_MODEL
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 
 
 def get_llm():
@@ -208,7 +208,7 @@ def extract_document_filter_from_question(question: str) -> Optional[str]:
 def synthesize_answers(sub_answers: List[Dict[str, str]], original_question: str) -> str:
     """
     Synthesize multiple sub-answers into a coherent response.
-    Combines all sub-answers intelligently without losing information.
+    Uses LLM to intelligently combine answers, removing redundancy and improving structure.
     """
     if not sub_answers:
         return "No information found for this question."
@@ -216,45 +216,77 @@ def synthesize_answers(sub_answers: List[Dict[str, str]], original_question: str
     if len(sub_answers) == 1:
         return sub_answers[0]["answer"]
     
-    # Build a structured response
-    parts = []
-    has_complete_answer = False
-    
-    for idx, sub_answer in enumerate(sub_answers, 1):
+    # Filter out empty/unavailable answers
+    valid_answers = []
+    for sub_answer in sub_answers:
         answer_text = sub_answer.get("answer", "").strip()
-        question_type = sub_answer.get("type", "general")
-        
-        # Skip truly empty answers
         if not answer_text:
             continue
         
-        # Check if answer has useful content (not just "not available")
+        # Check if answer has useful content
         answer_lower = answer_text.lower()
         is_empty_answer = (
-            answer_text == "not available" or 
-            answer_text == "Not available" or
-            answer_lower == "the information is not available in the provided documents."
+            "not available" in answer_lower or
+            "information is not available" in answer_lower
         )
         
-        # If answer has content beyond "not available", include it
         if not is_empty_answer:
-            has_complete_answer = True
-            parts.append(answer_text)
-        elif len(sub_answers) == 1:
-            # If it's the only answer, include it even if empty
-            parts.append(answer_text)
+            valid_answers.append(sub_answer)
     
-    if not parts:
+    if not valid_answers:
         return "The requested information is not available in the provided documents."
     
-    # Join with appropriate spacing
-    # If we have multiple parts, add line breaks for readability
-    if len(parts) > 1:
-        result = "\n\n".join(parts)
-    else:
-        result = parts[0]
+    # If only one valid answer, return it
+    if len(valid_answers) == 1:
+        return valid_answers[0]["answer"]
     
-    return result
+    # Use LLM to intelligently synthesize multiple answers
+    try:
+        llm = get_llm()
+        if not llm:
+            # Fallback: simple concatenation
+            logging.warning("No LLM for synthesis, using simple concatenation")
+            return "\n\n".join(sa["answer"] for sa in valid_answers)
+        
+        # Build context for synthesis
+        answers_text = ""
+        for idx, sa in enumerate(valid_answers, 1):
+            answers_text += f"Sub-answer {idx}: {sa['answer']}\n\n"
+        
+        synthesis_prompt = ChatPromptTemplate.from_template(
+            """You are synthesizing multiple answers into a single, coherent response.
+            
+            Original Question: {question}
+            
+            Multiple Answers:
+            {answers}
+            
+            CRITICAL INSTRUCTIONS:
+            1. **Deduplicate Information**: If the same fact appears in multiple answers, mention it ONLY ONCE.
+            2. **Clean Structure**: Organize information logically based on what was asked:
+               - If asked about multiple attributes (location, budget, timeline), present each clearly
+               - Use bullet points or clean formatting for multiple distinct pieces of information
+               - Start each distinct piece of info on a new line when appropriate
+            3. **Preserve Citations**: Keep all [document.pdf] citations from the original answers
+            4. **No Meta-Commentary**: Don't say "According to answer 1" or "Based on the answers"
+            5. **Natural Flow**: Write as if answering the original question directly
+            6. **Avoid Repetition**: If budget is mentioned twice, include it only once
+            
+            Synthesized Answer:"""
+        )
+        
+        chain = synthesis_prompt | llm | StrOutputParser()
+        result = chain.invoke({
+            "question": original_question,
+            "answers": answers_text
+        })
+        
+        return result.strip()
+        
+    except Exception as e:
+        logging.error(f"Error in LLM-based synthesis: {e}")
+        # Fallback to simple concatenation
+        return "\n\n".join(sa["answer"] for sa in valid_answers)
 
 
 __all__ = [

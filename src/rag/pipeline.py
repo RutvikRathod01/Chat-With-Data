@@ -453,7 +453,59 @@ def process_user_question(user_input, session: RagSession, chat_history=None):
         if len(sub_questions) > 1:
             logging.info("Processing %d sub-questions separately", len(sub_questions))
             
-            # Process each sub-question independently
+            # OPTIMIZATION: Group sub-questions that will likely retrieve same chunks
+            # If all sub-questions are semantic and about the same entity, process together
+            all_semantic = all(sq.get("strategy", "semantic") == "semantic" for sq in sub_questions)
+            
+            if all_semantic and len(sub_questions) <= 3:
+                # Check if questions are about same entity (share significant words)
+                question_words = [set(sq["question"].lower().split()) for sq in sub_questions]
+                if len(question_words) >= 2:
+                    common_words = question_words[0].intersection(*question_words[1:])
+                    # If they share significant words, likely about same entity
+                    significant_common = common_words - {"the", "a", "an", "of", "is", "what", "how", "when", "where", "who"}
+                    
+                    if len(significant_common) >= 2:
+                        # Combine into single question for efficiency
+                        combined_question = user_input  # Use original multi-part question
+                        logging.info("OPTIMIZATION: Combining related sub-questions into single retrieval")
+                        print(f"--- DEBUG: OPTIMIZATION APPLIED ---", flush=True)
+                        print(f"Detected related sub-questions about same entity, combining into single LLM call", flush=True)
+                        print(f"Shared context: {significant_common}", flush=True)
+                        
+                        relevant_context, resolved_question = retrieve_relevant_chunks(
+                            combined_question,
+                            session,
+                            chat_history,
+                            document_filter=doc_filter,
+                            strategy_hint="semantic",
+                            metadata_filters={},
+                            question_type="general"
+                        )
+                        
+                        if relevant_context:
+                            context_text = format_context_with_metadata(relevant_context)
+                            sources = extract_source_documents(relevant_context)
+                            
+                            # Ask LLM to answer all parts at once with deduplication instruction
+                            payload = {
+                                "context": context_text,
+                                "history": "None",
+                                "question": f"{resolved_question}\n\nIMPORTANT: Structure your answer clearly for each part of the question. If the same information applies to multiple parts, mention it only once.",
+                            }
+                            
+                            logging.info("Invoking LLM with combined question...")
+                            answer_text = session.rag_chain.invoke(payload)
+                            
+                            print(f"Combined answer generated: {len(answer_text)} chars", flush=True)
+                            print("----- DEBUG: END QUERY PROCESSING -----", flush=True)
+                            
+                            return {
+                                "answer": answer_text,
+                                "sources": list(sources)
+                            }
+            
+            # Standard path: Process each sub-question independently
             sub_answers = []
             all_sources = set()
             
