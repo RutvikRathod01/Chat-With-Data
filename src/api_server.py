@@ -90,6 +90,7 @@ class SessionCreate(BaseModel):
     document_name: str
     collection_name: str
     message: str
+    documents: List[str]
 
 
 class MessageHistory(BaseModel):
@@ -288,14 +289,16 @@ async def upload_documents(files: List[UploadFile] = File(...)):
         session_id = session_manager.create_session(
             result.rag_session,
             result.document_name,
-            result.collection_name
+            result.collection_name,
+            result.original_filenames
         )
 
         return {
             "session_id": session_id,
             "document_name": result.document_name,
             "collection_name": result.collection_name,
-            "message": f"Documents processed successfully: {result.document_name}"
+            "message": f"Documents processed successfully: {result.document_name}",
+            "documents": result.original_filenames
         }
 
     except HTTPException:
@@ -389,7 +392,7 @@ async def get_session_info(session_id: str):
 
         return {
             "session_id": session_id,
-            "document_name": session_info["document_name"],
+            "document_name": session_info.get("display_name", session_info["document_name"]),
             "collection_name": session_info["collection_name"],
             "created_at": session_info.get("created_at"),
             "last_updated": session_info.get("last_updated"),

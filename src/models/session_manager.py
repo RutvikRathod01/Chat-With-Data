@@ -34,7 +34,8 @@ class SessionManager:
         self,
         rag_session: RagSession,
         document_name: str,
-        collection_name: str
+        collection_name: str,
+        documents: List[str] = None
     ) -> str:
         """
         Create a new session for a document.
@@ -43,6 +44,7 @@ class SessionManager:
             rag_session: RAG session object
             document_name: Name of the document(s)
             collection_name: Vector store collection name
+            documents: List of original filenames
 
         Returns:
             session_id: Unique identifier for the session
@@ -58,7 +60,7 @@ class SessionManager:
         self.active_sessions[session_id] = rag_session
 
         # Persist to database
-        self.storage.create_session(session_id, document_name, collection_name)
+        self.storage.create_session(session_id, document_name, collection_name, documents)
 
         logging.info("Created session %s for document: %s", session_id, document_name)
         return session_id
