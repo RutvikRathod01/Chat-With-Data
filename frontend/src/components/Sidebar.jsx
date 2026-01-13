@@ -1,19 +1,34 @@
 import { useState, useRef, useEffect } from 'react'
-import { FaPlus, FaTimes, FaTrash, FaFile, FaComments, FaEllipsisV, FaPencilAlt, FaBroom, FaBars } from 'react-icons/fa'
+import { FaPlus, FaTimes, FaTrash, FaFile, FaComments, FaEllipsisV, FaPencilAlt, FaBroom, FaBars, FaSearch } from 'react-icons/fa'
 import { useChat } from '../context/ChatContext'
 import FileUpload from './FileUpload'
+import SearchChatsModal from './SearchChatsModal'
 import ConfirmModal from './ConfirmModal'
 import { formatDistanceToNow } from 'date-fns'
 
 const Sidebar = ({ isOpen, onClose }) => {
+
   const { sessions, currentSession, loadSession, deleteSession, renameSession, newChat, clearChat } = useChat()
   const [showUpload, setShowUpload] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
   const [openMenuId, setOpenMenuId] = useState(null)
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, sessionId: null })
   const [clearChatModal, setClearChatModal] = useState({ isOpen: false, sessionId: null })
   const [renameModal, setRenameModal] = useState({ isOpen: false, sessionId: null, currentName: '' })
   const [renameName, setRenameName] = useState('')
   const menuRef = useRef(null)
+
+  // Hotkey for search
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setShowSearch(true)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
 
   // Close menu when clicking outside
   useEffect(() => {
@@ -131,6 +146,15 @@ const Sidebar = ({ isOpen, onClose }) => {
             <FaPencilAlt className="w-5 h-5 text-gray-400" />
           </button>
 
+          {/* Search icon */}
+          <button
+            onClick={() => setShowSearch(true)}
+            className="p-3 hover:bg-gray-800 rounded-lg transition-colors"
+            title="Search chats (Ctrl+K)"
+          >
+            <FaSearch className="w-5 h-5 text-gray-400" />
+          </button>
+
           {/* Chats icon - clickable to open sidebar */}
           <button
             onClick={onClose}
@@ -146,10 +170,10 @@ const Sidebar = ({ isOpen, onClose }) => {
           {/* Header */}
           <div className="p-4 border-b border-gray-700">
             {/* New chat button and toggle button row */}
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-2">
               <button
                 onClick={handleNewChat}
-                className="flex items-center space-x-3 text-gray-300 hover:bg-gray-800 px-3 py-2.5 rounded-lg font-normal transition-colors"
+                className="flex items-center space-x-3 text-gray-300 hover:bg-gray-800 px-3 py-2.5 rounded-lg font-normal transition-colors flex-1 mr-2 justify-start"
               >
                 <FaPencilAlt className="w-4 h-4" />
                 <span className="text-sm">New chat</span>
@@ -164,6 +188,19 @@ const Sidebar = ({ isOpen, onClose }) => {
                 <FaBars className="w-4 h-4 text-gray-400" />
               </button>
             </div>
+
+            {/* Search Button */}
+            <button
+              onClick={() => setShowSearch(true)}
+              className="w-full flex items-center justify-between bg-gray-800 hover:bg-gray-700 text-gray-400 px-3 py-2 rounded-lg transition-colors mb-4 group"
+            >
+              <div className="flex items-center space-x-3">
+                <FaSearch className="w-4 h-4 group-hover:text-gray-300" />
+                <span className="text-sm group-hover:text-gray-200">Search chats</span>
+              </div>
+              <span className="text-xs text-gray-500 border border-gray-600 rounded px-1.5 py-0.5">Ctrl + K</span>
+            </button>
+
 
             {/* Your chats title */}
             <div className="flex items-center justify-between">
@@ -314,6 +351,12 @@ const Sidebar = ({ isOpen, onClose }) => {
           </div>
         </div>
       )}
+
+      {/* Search Modal */}
+      <SearchChatsModal
+        isOpen={showSearch}
+        onClose={() => setShowSearch(false)}
+      />
     </>
   )
 }

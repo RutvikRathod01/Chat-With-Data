@@ -259,6 +259,10 @@ class SessionManager:
         """Get session information from storage."""
         return self.storage.get_session(session_id)
 
+    def search_chats(self, query: str, limit: int = 20) -> List[dict]:
+        """Search chats by title and content."""
+        return self.storage.search_chats(query, limit)
+
     def add_documents_to_session(
         self,
         session_id: str,

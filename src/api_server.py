@@ -142,9 +142,24 @@ async def get_sessions():
                 "message_count": len(messages)
             })
 
+
         return result
     except Exception as e:
         logging.error(f"Error fetching sessions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/search")
+async def search_chats(q: str, limit: int = 20):
+    """Search chats by title and content."""
+    try:
+        if not q or not q.strip():
+            return []
+        
+        results = session_manager.search_chats(q, limit)
+        return results
+    except Exception as e:
+        logging.error(f"Error searching chats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

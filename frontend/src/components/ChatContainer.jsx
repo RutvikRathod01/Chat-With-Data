@@ -6,15 +6,20 @@ import EmptyState from './EmptyState'
 import { FaExclamationTriangle } from 'react-icons/fa'
 
 const ChatContainer = () => {
-  const { currentSession, messages, error, setError } = useChat()
+  const { currentSession, messages, error, setError, searchHighlight } = useChat()
   const containerRef = useRef(null)
+  const prevMessageCountRef = useRef(0)
 
   useEffect(() => {
-    // Scroll to bottom when messages change
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight
+    // Only auto-scroll to bottom when NEW messages are added (not on search)
+    if (containerRef.current && !searchHighlight) {
+      const messageCountIncreased = messages.length > prevMessageCountRef.current
+      if (messageCountIncreased) {
+        containerRef.current.scrollTop = containerRef.current.scrollHeight
+      }
     }
-  }, [messages])
+    prevMessageCountRef.current = messages.length
+  }, [messages, searchHighlight])
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-gray-50">

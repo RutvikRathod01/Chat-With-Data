@@ -364,6 +364,7 @@ class ChatStorage:
             logging.error("Error updating session timestamp: %s", e)
             return False
 
+
     def append_documents_to_session(self, session_id: str, new_documents: List[str]) -> bool:
         """Append new documents to an existing session.
 
@@ -427,6 +428,78 @@ class ChatStorage:
         except Exception as e:
             logging.error("Error appending documents to session: %s", e)
             return False
+
+    def search_chats(self, query: str, limit: int = 20) -> List[dict]:
+        """Search chats by title and content.
+        
+        Args:
+            query: Search term
+            limit: Maximum number of results
+            
+        Returns:
+            List of matches including session info and snippets
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                results = []
+                
+                # 1. Search Session Titles
+                cursor.execute("""
+                    SELECT session_id, document_name, display_name, last_updated
+                    FROM sessions
+                    WHERE (document_name LIKE ? OR display_name LIKE ?) AND is_active = 1
+                    ORDER BY last_updated DESC
+                    LIMIT ?
+                """, (f'%{query}%', f'%{query}%', limit))
+                
+                for row in cursor.fetchall():
+                    results.append({
+                        "session_id": row[0],
+                        "document_name": row[1],
+                        "display_name": row[2] if row[2] else row[1],
+                        "match_type": "title",
+                        "snippet": None,
+                        "timestamp": row[2]
+                    })
+                    
+                # 2. Search Messages
+                remaining_limit = limit - len(results)
+                if remaining_limit > 0:
+                    cursor.execute("""
+                        SELECT m.session_id, m.content, m.timestamp, s.document_name, s.display_name
+                        FROM messages m
+                        JOIN sessions s ON m.session_id = s.session_id
+                        WHERE m.content LIKE ? AND s.is_active = 1
+                        ORDER BY m.timestamp DESC
+                        LIMIT ?
+                    """, (f'%{query}%', remaining_limit))
+                    
+                    for row in cursor.fetchall():
+                        # Create a snippet
+                        content = row[1]
+                        # Find the match index (case insensitive approximation for snippet)
+                        idx = content.lower().find(query.lower())
+                        if idx != -1:
+                            start = max(0, idx - 40)
+                            end = min(len(content), idx + 100)
+                            snippet = ("..." if start > 0 else "") + content[start:end] + ("..." if end < len(content) else "")
+                        else:
+                            snippet = content[:100] + "..."
+                        
+                        results.append({
+                            "session_id": row[0],
+                            "document_name": row[3],
+                            "display_name": row[4] if row[4] else row[3],
+                            "match_type": "content",
+                            "snippet": snippet,
+                            "timestamp": row[2]
+                        })
+                
+                return results
+        except Exception as e:
+            logging.error("Error searching chats: %s", e)
+            return []
 
 
 

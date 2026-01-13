@@ -57,8 +57,14 @@ export const chatAPI = {
     return response.data;
   },
 
+
   deleteSession: async (sessionId) => {
     const response = await api.delete(`/sessions/${sessionId}`);
+    return response.data;
+  },
+
+  searchChats: async (query) => {
+    const response = await api.get(`/search?q=${encodeURIComponent(query)}`);
     return response.data;
   },
 

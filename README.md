@@ -37,7 +37,7 @@ The application follows a modular architecture:
 #### Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/Tokir-Vora/chat-with-your-data.git
+git clone https://github.com/[your_repo_name]
 cd chat-with-your-data
 ```
 

@@ -2,10 +2,49 @@ import { FaUser, FaRobot, FaPaperclip } from 'react-icons/fa'
 import ReactMarkdown from 'react-markdown'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { forwardRef } from 'react'
 
-const Message = ({ message }) => {
+const Message = forwardRef(({ message, highlightQuery = null }, ref) => {
   const isUser = message.role === 'user'
   const isSystem = message.role === 'system'
+
+  // Helper function to highlight text
+  const HighlightText = ({ text }) => {
+    if (!highlightQuery || !text) return <span>{text}</span>
+
+    const escapeRegExp = (string) => string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const regex = new RegExp(`(${escapeRegExp(highlightQuery)})`, 'gi')
+    const parts = text.split(regex)
+
+    return (
+      <>
+        {parts.map((part, i) =>
+          regex.test(part) ? (
+            <mark key={i} className="bg-yellow-300 text-gray-900 rounded px-0.5 animate-pulse">{part}</mark>
+          ) : (
+            part
+          )
+        )}
+      </>
+    )
+  }
+
+  // Helper to wrap children with highlighting
+  const wrapWithHighlight = (children) => {
+    if (!highlightQuery) return children
+    
+    if (typeof children === 'string') {
+      return <HighlightText text={children} />
+    }
+    
+    if (Array.isArray(children)) {
+      return children.map((child, i) => 
+        typeof child === 'string' ? <HighlightText key={i} text={child} /> : child
+      )
+    }
+    
+    return children
+  }
 
   // System messages (document additions, etc.)
   if (isSystem) {
@@ -21,6 +60,7 @@ const Message = ({ message }) => {
 
   return (
     <div
+      ref={ref}
       className={`flex items-start space-x-4 animate-fade-in ${isUser ? 'justify-end' : 'justify-start'
         }`}
     >
@@ -41,7 +81,7 @@ const Message = ({ message }) => {
       >
         {isUser ? (
           <p className="text-base leading-relaxed whitespace-pre-wrap">
-            {message.content}
+            <HighlightText text={message.content} />
           </p>
         ) : (
           <div className="message-content prose prose-sm max-w-none">
@@ -60,12 +100,12 @@ const Message = ({ message }) => {
                     </SyntaxHighlighter>
                   ) : (
                     <code className={className} {...props}>
-                      {children}
+                      {wrapWithHighlight(children)}
                     </code>
                   )
                 },
                 p({ children }) {
-                  return <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>
+                  return <p className="mb-2 last:mb-0 leading-relaxed">{wrapWithHighlight(children)}</p>
                 },
                 ul({ children }) {
                   return <ul className="list-disc ml-4 mb-2 space-y-1">{children}</ul>
@@ -74,13 +114,13 @@ const Message = ({ message }) => {
                   return <ol className="list-decimal ml-4 mb-2 space-y-1">{children}</ol>
                 },
                 li({ children }) {
-                  return <li className="leading-relaxed">{children}</li>
+                  return <li className="leading-relaxed">{wrapWithHighlight(children)}</li>
                 },
                 strong({ children }) {
-                  return <strong className="font-semibold">{children}</strong>
+                  return <strong className="font-semibold">{wrapWithHighlight(children)}</strong>
                 },
                 em({ children }) {
-                  return <em className="italic">{children}</em>
+                  return <em className="italic">{wrapWithHighlight(children)}</em>
                 },
               }}
             >
@@ -97,6 +137,8 @@ const Message = ({ message }) => {
       )}
     </div>
   )
-}
+})
+
+Message.displayName = 'Message'
 
 export default Message

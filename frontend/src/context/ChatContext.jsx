@@ -20,6 +20,7 @@ export const ChatProvider = ({ children }) => {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState(null);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [searchHighlight, setSearchHighlight] = useState(null); // { query: string, timestamp: number }
 
   // Load all sessions on mount
   useEffect(() => {
@@ -42,7 +43,7 @@ export const ChatProvider = ({ children }) => {
   }, []);
 
   // Load a specific session
-  const loadSession = useCallback(async (sessionId) => {
+  const loadSession = useCallback(async (sessionId, searchQuery = null) => {
     try {
       setLoading(true);
       const [sessionInfo, messagesData] = await Promise.all([
@@ -53,6 +54,11 @@ export const ChatProvider = ({ children }) => {
       setCurrentSession(sessionInfo);
       setMessages(messagesData);
       setError(null);
+      
+      // Set search highlight if query provided
+      if (searchQuery) {
+        setSearchHighlight({ query: searchQuery, timestamp: Date.now() });
+      }
     } catch (err) {
       console.error('Error loading session:', err);
       setError('Failed to load session');
@@ -242,6 +248,8 @@ export const ChatProvider = ({ children }) => {
     uploadProgress,
     error,
     sendingMessage,
+    searchHighlight,
+    setSearchHighlight,
     loadSessions,
     loadSession,
     uploadDocuments,
